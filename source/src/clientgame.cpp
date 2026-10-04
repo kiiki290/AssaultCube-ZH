@@ -918,7 +918,10 @@ const char *killmessage(int gun, bool gib = false)
     {
         defformatstring(aname)("%smessage_%s", gib ? "gib" : "frag", gunnames[gun]);
         const char *res = getalias(aname);
-        return res ? res : killmessages[gib ? 1 : 0][gun];
+        // a player-configured alias is shown verbatim; only the default wording
+        // is translated (the verbs are interpolated as %s, so the output
+        // helpers never get a chance to see them)
+        return res ? res : tr(killmessages[gib ? 1 : 0][gun]);
     }
     return "";
 }

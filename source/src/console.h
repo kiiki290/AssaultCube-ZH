@@ -66,12 +66,16 @@ struct textinputbuffer
                 pos = -1;
                 break;
 
+            // pos < 0 means "at the end"; pos >= 0 is a byte offset that always
+            // sits on a codepoint boundary, so multi-byte chars stay intact
             case SDLK_DELETE:
             {
-                int len = (int)strlen(buf);
                 if(pos<0) break;
-                memmove(&buf[pos], &buf[pos+1], len - pos);
-                if(pos>=len-1) pos = -1;
+                int len = (int)strlen(buf);
+                if(pos>=len) { pos = -1; break; }
+                int next = utf8_next(buf, pos);
+                memmove(&buf[pos], &buf[next], len - next + 1);
+                if(pos >= len - (next - pos)) pos = -1;
                 return true;
             }
 
@@ -79,20 +83,24 @@ struct textinputbuffer
             {
                 int len = (int)strlen(buf), i = pos>=0 ? pos : len;
                 if(i<1) break;
-                memmove(&buf[i-1], &buf[i], len - i + 1);
-                if(pos>0) pos--;
-                else if(!pos && len<=1) pos = -1;
+                int prev = utf8_prev(buf, i);
+                memmove(&buf[prev], &buf[i], len - i + 1);
+                if(pos>0) pos = prev;
                 return true;
             }
 
             case SDLK_LEFT:
-                if(pos > 0) pos--;
-                else if(pos < 0) pos = (int)strlen(buf)-1;
+                if(pos > 0) pos = utf8_prev(buf, pos);
+                else if(pos < 0 && buf[0]) pos = utf8_prev(buf, (int)strlen(buf));
                 break;
 
             case SDLK_RIGHT:
-                if(pos>=0 && ++pos>=(int)strlen(buf)) pos = -1;
+            {
+                if(pos<0) break;
+                int next = utf8_next(buf, pos);
+                pos = next >= (int)strlen(buf) ? -1 : next;
                 break;
+            }
 
             case SDLK_v:
                 if(SDL_GetModState() & MOD_KEYS_CTRL)

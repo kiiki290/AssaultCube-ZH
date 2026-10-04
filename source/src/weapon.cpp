@@ -874,7 +874,7 @@ void raydamage(vec &from, vec &to, playerent *d)
     }
 }
 
-const char *weapstr(int i) { return valid_weapon(i) ? guns[i].title : "x"; }
+const char *weapstr(int i) { return valid_weapon(i) ? tr(guns[i].title) : "x"; }
 
 VARP(accuracy,0,0,1);
 

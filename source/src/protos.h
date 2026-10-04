@@ -756,6 +756,27 @@ extern void text_endcolumns();
 extern void cutcolorstring(char *text, int len);
 extern bool filterunrenderables(char *s);
 
+// fontrender: runtime CJK glyph rendering
+// (the UTF-8 helpers live in tools.h so console.h can reach them too)
+struct cjkglyph
+{
+    unsigned int texid;             // atlas texture holding this glyph
+    short w, h;                     // ink size, virtual units
+    short ox, oy;                   // ink offset from pen x / line top
+    float left, right, top, bottom; // atlas texcoords
+    int advance;                    // advance width, virtual units
+};
+
+extern bool cjk_available();
+extern bool cjk_hasglyph(int codepoint);
+extern int cjk_advance(int codepoint, int pxsize);
+extern const cjkglyph *cjk_getglyph(int codepoint, int pxsize);
+extern void cjk_prepare(const char *str, int pxsize);
+extern void cjk_reload();
+
+// i18n: look up a translation, returning the original on a miss
+extern const char *tr(const char *s);
+
 // editing
 #define EDITSEL(x)   if(noteditmode(x) || noselection()) return
 #define EDITSELMP(x) if(noteditmode(x) || noselection() || multiplayer(x)) return

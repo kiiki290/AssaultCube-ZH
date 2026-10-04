@@ -122,6 +122,7 @@ void clientlogf(const char *s, ...)
 SVAR(conline,"n/a");
 void conoutf(const char *s, ...)
 {
+    s = tr(s); // translate the template, keeping printf specifiers intact
     defvformatstring(sf, s, s);
     clientlogf("%s", sf);
     con.addline(sf);

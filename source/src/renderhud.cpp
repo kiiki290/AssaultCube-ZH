@@ -552,6 +552,7 @@ hudmessages hudmsgs;
 
 void hudoutf(const char *s, ...)
 {
+    s = tr(s);
     defvformatstring(sf, s, s);
     hudmsgs.addline(sf);
     conoutf("%s", sf);
@@ -559,6 +560,7 @@ void hudoutf(const char *s, ...)
 
 void hudonlyf(const char *s, ...)
 {
+    s = tr(s);
     defvformatstring(sf, s, s);
     hudmsgs.addline(sf);
 }

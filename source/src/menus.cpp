@@ -1496,8 +1496,10 @@ void gmenu::render()
     if(!t)
     {
         static string buf;
-        if(hotkeys) formatstring(buf)("%s hotkeys", name);
-        else formatstring(buf)("[ %s menu ]", name);
+        // translate the pattern, not the result: one pack entry then covers
+        // every menu, with the menu's own name translated separately
+        if(hotkeys) formatstring(buf)(tr("%s hotkeys"), tr(name));
+        else formatstring(buf)(tr("[ %s menu ]"), tr(name));
         t = buf;
     }
     int w = 0, footermaxw = 2 * VIRTW - 6 * FONTH, hitems = headeritems(), footwidth, footheight, maxfootheight = 0;

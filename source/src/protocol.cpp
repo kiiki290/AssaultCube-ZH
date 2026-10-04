@@ -314,10 +314,21 @@ char *filtertext(char *dst, const char *src, int flags, int len)
     bool trans = toupp || tolow || leet || filename || fillblanks;
     char *lastwhite = NULL;
     bool insidepointybrackets = false;
-    for(int c = *src; c; c = *++src)
+    for(int c = (uchar)*src; c; c = (uchar)*++src)
     {
-        c &= 0x7F; // 7-bit ascii. not negotiable.
         pass = false;
+        if(c >= 0x80)
+        { // UTF-8: let multi-byte text through in free-text fields (chat,
+          // nicknames, descriptions, logs); strict identifier fields stay ASCII
+            if(!filename && !mapname)
+            {
+                cropwhitelead = false;
+                lastwhite = NULL;
+                *dst++ = c;
+                if(!--len || !*src) break;
+            }
+            continue;
+        }
         if(trans)
         {
             if(leet)
@@ -394,13 +405,15 @@ void filterrichtext(char *dst, const char *src, int len)
 {
     int b, c;
     unsigned long ul;
-    for(c = *src; c; c = *++src)
+    // high bytes pass through untouched so UTF-8 text (e.g. translations in
+    // quoted config strings) survives; read as uchar because we build with
+    // -fsigned-char
+    for(c = (uchar)*src; c; c = (uchar)*++src)
     {
-        c &= 0x7F; // 7-bit ascii
         if(c == '\\')
         {
             b = 0;
-            c = *++src;
+            c = (uchar)*++src;
             switch(c)
             {
                 case '\0': --src; continue;
@@ -412,7 +425,7 @@ void filterrichtext(char *dst, const char *src, int len)
                 case '_': c = ' '; break;
                 case 'x':
                     b = 16;
-                    c = *++src;
+                    c = (uchar)*++src;
                 default:
                     if(isspace(c)) continue;
                     if(b == 0 && !isdigit(c)) break;
@@ -646,6 +659,14 @@ int lastclactionslookup(int msg)
     return false;
 }
 
+// this file is also compiled into the standalone server, which links without
+// the client-side i18n module, so the lookup has to be compiled out there
+#ifndef STANDALONE
+#define DISC_TR(x) tr(x)
+#else
+#define DISC_TR(x) (x)
+#endif
+
 const char *disc_reason(int reason)
 {
     static const char *prot[] = { "terminated by enet", "end of packet", "client num", "tag type", "duplicate connection", "overflow", "random", "voodoo", "sync", "auth failed" },
@@ -657,23 +678,23 @@ const char *disc_reason(int reason)
     const int prot_n = constarraysize(prot), ref_n = constarraysize(refused), rem_n = constarraysize(removed), kick_n = constarraysize(kick);
     if(reason >= DISC_PROTOCOL && reason < DISC_REFUSED)
     { // protocol related errors
-        if(reason < DISC_PROTOCOL + prot_n) return prot[reason];
+        if(reason < DISC_PROTOCOL + prot_n) return DISC_TR(prot[reason]);
         else formatstring(res)("network protocol error '%d'", reason);
     }
     else if(reason >= DISC_REFUSED && reason < DISC_REMOVED)
     { // connection refused
-        if(reason < DISC_REFUSED + ref_n) return refused[reason - DISC_REFUSED];
+        if(reason < DISC_REFUSED + ref_n) return DISC_TR(refused[reason - DISC_REFUSED]);
         else formatstring(res)("connection refused '%d'", reason);
     }
     else if(reason >= DISC_REMOVED && reason < DISC_KICK)
     { // player removed from server
-        if(reason < DISC_REMOVED + rem_n) return removed[reason - DISC_REMOVED];
+        if(reason < DISC_REMOVED + rem_n) return DISC_TR(removed[reason - DISC_REMOVED]);
         else formatstring(res)("removed from server '%d'", reason);
     }
     else if(reason >= DISC_KICK && reason < DISC_UNKNOWN)
     { // kicks & bans
         reason -= DISC_KICK;
-        if(reason < kick_n) return kick[reason];
+        if(reason < kick_n) return DISC_TR(kick[reason]);
         else formatstring(res)("%s '%d'", reason & 1 ? "banned" : "kicked", reason + DISC_KICK);
     }
     else

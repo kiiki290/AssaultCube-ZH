@@ -92,12 +92,13 @@ void popfont()
 int text_width(const char *str)
 {
     int width, height;
-    text_bounds(str, width, height);
+    text_bounds(str, width, height); // text_bounds does the tr() itself
     return width;
 }
 
 void draw_textf(const char *fstr, int left, int top, ...)
 {
+    fstr = tr(fstr); // translate the template, so the arguments survive
     defvformatstring(str, top, fstr);
     draw_text(str, left, top);
 }
@@ -113,13 +114,60 @@ inline int draw_char_contd(font &f, font::charinfo &info, int charcode, int x, i
     return info.w;
 }
 
+// texture the glyph quads are currently batched against; CJK glyphs live in a
+// different atlas than the bitmap font, so we have to flush the batch to switch
+static unsigned int text_lasttex = 0;
+
+static void text_bindtex(unsigned int id, int bpp)
+{
+    if(text_lasttex == id) return;
+    glEnd();
+    glBindTexture(GL_TEXTURE_2D, id);
+    glBlendFunc(GL_SRC_ALPHA, bpp == 32 ? GL_ONE_MINUS_SRC_ALPHA : GL_ONE);
+    glBegin(GL_QUADS);
+    text_lasttex = id;
+}
+
+// drawable by the current font: either a bitmap glyph, or a CJK fallback glyph
+static bool text_renderable(int c)
+{
+    if(curfont->chars.inrange(c - curfont->skip)) return true;
+    return c >= 128 && cjk_hasglyph(c);
+}
+
+// advance width in virtual units; callers add the usual +1 spacing themselves
+static int text_advance(int c)
+{
+    if(curfont->chars.inrange(c - curfont->skip)) return curfont->chars[c - curfont->skip].w;
+    if(c >= 128) return cjk_advance(c, FONTH);
+    return 0;
+}
+
 static int draw_char(int c, int x, int y)
 {
     if(curfont->chars.inrange(c-curfont->skip))
     {
+        text_bindtex(curfont->tex->id, curfont->tex->bpp);
         font::charinfo &info = curfont->chars[c-curfont->skip];
 
         return draw_char_contd(*curfont, info, c, x, y);
+    }
+
+    if(c >= 128)
+    {
+        const cjkglyph *g = cjk_getglyph(c, FONTH);
+        if(g)
+        {
+            text_bindtex(g->texid, 32);
+            int gx = x + g->ox, gy = y + g->oy;
+            glTexCoord2f(g->left,  g->top   ); glVertex2f(gx,        gy);
+            glTexCoord2f(g->right, g->top   ); glVertex2f(gx + g->w, gy);
+            glTexCoord2f(g->right, g->bottom); glVertex2f(gx + g->w, gy + g->h);
+            glTexCoord2f(g->left,  g->bottom); glVertex2f(gx,        gy + g->h);
+
+            xtraverts += 4;
+            return g->advance;
+        }
     }
     return 0;
 }
@@ -261,54 +309,68 @@ void text_endcolumns()
     else x = TABALIGN(x);
 
 
+// Note: the loop walks byte offsets but only ever stops on codepoint starts, so
+// TEXTINDEX/TEXTWHITE/TEXTLINE keep handing out byte positions (what the edit
+// buffer and hit-testing use) while multi-byte characters stay intact.
 #define TEXTSKELETON \
     int y = 0, x = 0, col = 0, colx = 0;\
     int i;\
-    for(i = 0; str[i]; i++)\
+    for(i = 0; str[i]; )\
     {\
+        int clen = 1;\
+        int c = utf8_decode(str + i, clen);\
         TEXTINDEX(i)\
-        int c = str[i];\
         if(c=='\t')      { TEXTTAB(i); TEXTWHITE(i) }\
         else if(c==' ')  { x += curfont->defaultw; TEXTWHITE(i) }\
         else if(c=='\n') { TEXTLINE(i) x = 0; y += FONTH; }\
         else if(c=='\f') { if(str[i+1]) { i++; TEXTCOLOR(i) }}\
         else if(c=='\1') { if(str[i+1]) { i++; TEXTIGRAPH(i) }}\
         else if(c=='\a') { if(str[i+1]) { i++; }}\
-        else if(curfont->chars.inrange(c-curfont->skip))\
+        else if(text_renderable(c))\
         {\
             if(maxwidth != -1)\
             {\
                 int j = i;\
-                int w = curfont->chars[c-curfont->skip].w;\
-                for(; str[i+1]; i++)\
+                int w = text_advance(c);\
+                int p = i + clen;\
+                int last = i;\
+                bool single = c >= 128;\
+                for(; str[p] && !single; )\
                 {\
-                    int c = str[i+1];\
-                    bool isig = c == '\1';\
-                    if(c=='\f') { if(str[i+2]) i++; continue; }\
-                    if(i-j > 16) break;\
-                    if(!isig && !curfont->chars.inrange(c-curfont->skip)) break;\
-                    int cw = isig ? FONTH + 1 : curfont->chars[c-curfont->skip].w + 1;\
-                    if(isig && str[i + 2]) i++;\
+                    int plen = 1;\
+                    int pc = utf8_decode(str + p, plen);\
+                    if(pc=='\f') { if(str[p+1]) p += 2; continue; }\
+                    if(pc=='\1') { if(!str[p+1]) break; if(w + FONTH + 1 >= maxwidth) break; w += FONTH + 1; last = p; p += 2; continue; }\
+                    if(!text_renderable(pc)) break;\
+                    if(pc >= 128) break;\
+                    if(p - j > 16) break;\
+                    int cw = text_advance(pc) + 1;\
                     if(w + cw >= maxwidth) break;\
                     w += cw;\
+                    last = p;\
+                    p += plen;\
                 }\
+                i = last;\
                 if(x + w >= maxwidth && j!=0) { TEXTLINE(j-1) x = 0; y += FONTH; }\
                 TEXTWORD\
             }\
             else\
             { TEXTCHAR(i) }\
         }\
+        i += utf8_charlen(str + i);\
     }
 
 //all the chars are guaranteed to be either drawable or color commands
 #define TEXTWORDSKELETON \
-                for(; j <= i; j++)\
+                for(; j <= i; )\
                 {\
+                    int wlen = 1;\
+                    int c = utf8_decode(str + j, wlen);\
                     TEXTINDEX(j)\
-                    int c = str[j];\
                     if(c=='\f') { if(str[j+1]) { j++; TEXTCOLOR(j) }}\
                     else if(c=='\1') { if(str[j+1]) { j++; TEXTIGRAPH(j) }}\
                     else { TEXTCHAR(j) }\
+                    j += wlen;\
                 }
 
 int text_visible(const char *str, int hitx, int hity, int maxwidth)
@@ -319,7 +381,7 @@ int text_visible(const char *str, int hitx, int hity, int maxwidth)
     #define TEXTLINE(idx) if(y+FONTH > hity) return idx;
     #define TEXTCOLOR(idx)
     #define TEXTIGRAPH(idx) x += FONTH; TEXTWHITE(idx)
-    #define TEXTCHAR(idx) x += curfont->chars[c-curfont->skip].w+1; TEXTWHITE(idx)
+    #define TEXTCHAR(idx) x += text_advance(c)+1; TEXTWHITE(idx)
     #define TEXTWORD TEXTWORDSKELETON
     TEXTSKELETON
     #undef TEXTINDEX
@@ -342,7 +404,7 @@ void text_pos(const char *str, int cursor, int &cx, int &cy, int maxwidth)
     #define TEXTLINE(idx)
     #define TEXTCOLOR(idx)
     #define TEXTIGRAPH(idx) x += FONTH;
-    #define TEXTCHAR(idx) x += curfont->chars[c-curfont->skip].w + 1;
+    #define TEXTCHAR(idx) x += text_advance(c) + 1;
     #define TEXTWORD TEXTWORDSKELETON if(i >= cursor) break;
     cx = INT_MIN;
     cy = 0;
@@ -360,13 +422,14 @@ void text_pos(const char *str, int cursor, int &cx, int &cy, int maxwidth)
 
 void text_bounds(const char *str, int &width, int &height, int maxwidth)
 {
+    str = tr(str); // must match what draw_text will layout
     #define TEXTINDEX(idx)
     #define TEXTTAB(idx) TEXTSETCOLUMN
     #define TEXTWHITE(idx)
     #define TEXTLINE(idx) if(x > width) width = x;
     #define TEXTCOLOR(idx)
     #define TEXTIGRAPH(idx) x += FONTH + 1;
-    #define TEXTCHAR(idx) x += curfont->chars[c-curfont->skip].w + 1;
+    #define TEXTCHAR(idx) x += text_advance(c) + 1;
     #define TEXTWORD x += w + 1;
     width = 0;
     TEXTSKELETON
@@ -384,7 +447,8 @@ void text_bounds(const char *str, int &width, int &height, int maxwidth)
 
 void draw_text(const char *str, int left, int top, int r, int g, int b, int a, int cursor, int maxwidth)
 {
-#define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; cc = str[idx]; }
+    str = tr(str);
+#define TEXTINDEX(idx) if(idx == cursor) { cx = x; cy = y; cc = c; }
 #define TEXTTAB(idx) TEXTGETCOLUMN
 #define TEXTWHITE(idx)
 #define TEXTLINE(idx)
@@ -397,8 +461,12 @@ void draw_text(const char *str, int left, int top, int r, int g, int b, int a, i
     int colorpos = 0, cx = INT_MIN, cy = 0, cc = ' ';
     colorstack[0] = 'c'; //indicate user color
     igraphbatch.setsize(0);
+    // rasterize CJK glyphs before the batch opens: texture creation and upload
+    // are not allowed between glBegin/glEnd
+    cjk_prepare(str, FONTH);
     glBlendFunc(GL_SRC_ALPHA, curfont->tex->bpp==32 ? GL_ONE_MINUS_SRC_ALPHA : GL_ONE);
     glBindTexture(GL_TEXTURE_2D, curfont->tex->id);
+    text_lasttex = curfont->tex->id;
     glBegin(GL_QUADS);
     glColor4ub(color.x, color.y, color.z, a);
     TEXTSKELETON
@@ -407,7 +475,8 @@ void draw_text(const char *str, int left, int top, int r, int g, int b, int a, i
     {
         if(cx == INT_MIN) { cx = x; cy = y; }
         if(maxwidth != -1 && cx >= maxwidth) { cx = 0; cy += FONTH; }
-        int cw = curfont->chars.inrange(cc-33) ? curfont->chars[cc-33].w + 1 : curfont->defaultw;
+        int cw = text_advance(cc) + 1;
+        if(cw <= 1) cw = curfont->defaultw;
         rendercursor(left+cx, top+cy, cw);
     }
     render_igraphs();
@@ -426,6 +495,7 @@ void reloadfonts()
     enumerate(fonts, font, f,
         if(!reloadtexture(*f.tex)) fatal("failed to reload font texture");
     );
+    cjk_reload();
 }
 
 void cutcolorstring(char *text, int maxlen)
@@ -433,14 +503,20 @@ void cutcolorstring(char *text, int maxlen)
     if(!curfont) return;
     int len = 0;
     maxlen *= curfont->defaultw;
-    while(*text)
+    for(int i = 0; text[i]; )
     {
-        if(*text == '\f' && text[1]) text++;
-        else if(*text == '\1' && text[1]) text++, len += FONTH + 1;
-        else if(*text == '\t') len = TABALIGN(len);
-        else len += curfont->chars.inrange(*text - curfont->skip) ? curfont->chars[*text - curfont->skip].w : curfont->defaultw;
-        if(len > maxlen) { *text = '\0'; break; }
-        text++;
+        int start = i;
+        int clen = 1;
+        int c = utf8_decode(text + i, clen);
+        if(c == '\f' && text[i+1]) i += 2;
+        else if(c == '\1' && text[i+1]) { i += 2; len += FONTH + 1; }
+        else
+        {
+            if(c == '\t') len = TABALIGN(len);
+            else { int w = text_advance(c); len += w ? w : curfont->defaultw; }
+            i += clen;
+        }
+        if(len > maxlen) { text[start] = '\0'; break; } // cut on a codepoint boundary
     }
 }
 
@@ -448,11 +524,17 @@ bool filterunrenderables(char *s)
 {
     bool res = false;
     char *d = s;
-    while(*s)
+    for(int i = 0; s[i]; )
     {
-        if(!curfont->chars.inrange(*s - curfont->skip) && *s != ' ') res = true;
-        else *d++ = *s;
-        s++;
+        int clen = 1;
+        int c = utf8_decode(s + i, clen);
+        bool keep;
+        if(c == ' ') keep = true;
+        else if(c >= 128) keep = clen > 1 && cjk_hasglyph(c); // keep whole sequences, drop invalid bytes
+        else keep = curfont->chars.inrange(c - curfont->skip);
+        if(keep) loopj(clen) *d++ = s[i + j];
+        else res = true;
+        i += clen;
     }
     *d = '\0';
     return res;

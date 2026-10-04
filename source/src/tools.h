@@ -899,6 +899,13 @@ extern int fixmapheadersize(int version, int headersize);
 extern char *path(char *s);
 extern char *path(const char *s, bool copy);
 extern char *unixpath(char *s);
+// UTF-8 (fontrender.cpp); declared here, not in protos.h, because console.h is
+// pulled in before protos.h. read bytes through uchar: -fsigned-char is set.
+extern int utf8_decode(const char *s, int &len);   // codepoint + byte length (>= 1)
+extern int utf8_charlen(const char *s);
+extern int utf8_prev(const char *s, int pos);      // start of the codepoint before pos
+extern int utf8_next(const char *s, int pos);      // start of the codepoint after pos
+
 extern const char *behindpath(const char *s);
 extern const char *parentdir(const char *directory);
 extern bool fileexists(const char *path, const char *mode);
