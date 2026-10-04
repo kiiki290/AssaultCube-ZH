@@ -776,6 +776,8 @@ extern void cjk_reload();
 
 // i18n: look up a translation, returning the original on a miss
 extern const char *tr(const char *s);
+// i18n: load the configured language pack once configs have settled
+extern void initlanguage();
 
 // editing
 #define EDITSEL(x)   if(noteditmode(x) || noselection()) return

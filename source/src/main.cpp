@@ -1615,6 +1615,7 @@ int main(int argc, char **argv)
         exec("config/defaults.cfg");
         bootstrapentropy += 5 + rnd(7);
     }
+    initlanguage();  // if no config above named a language, apply the default
     autostartscripts("_aftersaved_");
     exechook(HOOK_SP_MP, "afterinit", "");
     if(waitforauth)

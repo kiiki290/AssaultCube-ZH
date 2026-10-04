@@ -14,6 +14,7 @@
 #include "cube.h"
 
 static hashtable<const char *, const char *> translations;
+static bool langloaded = false;
 
 const char *tr(const char *s)
 {
@@ -52,6 +53,7 @@ static void cleartranslations()
 void reloadtranslation(const char *code)
 {
     cleartranslations();
+    langloaded = true;
     if(!code || !*code || !strcmp(code, "en")) return; // English is the built-in source language
 
     defformatstring(file)("config" PATHDIVS "lang" PATHDIVS "%s.cfg", code);
@@ -59,5 +61,16 @@ void reloadtranslation(const char *code)
         conoutf("\f3no translation pack for language \"%s\" (expected %s)", code, file);
 }
 
-// persisted automatically, so a player's choice survives restarts
-SVARFP(uilang, "en", reloadtranslation(uilang));
+// persisted automatically, so a player's choice survives restarts.
+// "zh" is the default of this fork: the game starts translated, and English
+// stays one Settings > Language click away.
+SVARFP(uilang, "zh", reloadtranslation(uilang));
+
+void initlanguage()
+{
+    // svariable() registers the variable without calling its change callback, so
+    // the initial value never loads a pack on its own. saved.cfg and
+    // defaults.cfg are exec'd later (see clientinit), and if neither names a
+    // language the default above has to be applied here.
+    if(!langloaded) reloadtranslation(uilang);
+}

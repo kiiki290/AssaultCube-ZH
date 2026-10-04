@@ -61,11 +61,11 @@ cd ../..
 
 ### 切换语言
 
-设置 → **语言**，或在控制台输入：
+**默认即为简体中文**，首次启动无需任何设置。想换回英文：设置 → **语言**，或在控制台输入：
 
 ```
-uilang zh     # 简体中文
 uilang en     # English
+uilang zh     # 简体中文
 ```
 
 选择会自动保存，重启后保持。
@@ -95,6 +95,6 @@ Unofficial Simplified Chinese localization for [AssaultCube](https://github.com/
 - Localizes the menus and in-game text: weapons, sound names, teams, kill messages, game modes, disconnect reasons, help and demo screens.
 - Arbitrary Chinese input works (chat, nicknames, server descriptions).
 - **Chinese chat requires the server to run this build as well** — the stock server masks chat to 7 bits, corrupting UTF-8. Interface localization is client-side and works on any server.
-- Switch with `uilang zh` or *Settings → Language*.
+- Starts in Simplified Chinese; switch back with `uilang en` or *Settings → Language*.
 
 Built on upstream `release_1.4` (base commit `de5dbd5b1`).
