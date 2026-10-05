@@ -395,6 +395,29 @@ void resizephysent(physent *pl, int moveres, int curtime, float min, float max)
 
 FVARP(flyspeed, 1.0, 2.0, 5.0);
 
+// 64 Hz simulation, matching CS2's server tick. 1000/64 is not an integer, so the step is pinned
+// to 16 ms = 62.5 Hz instead of 15 ms = 66.7 Hz: 16 ms is the closer approximation of 15.625 ms
+// (a 2.4% difference in step size) and it keeps curtime an integer millisecond everywhere.
+const int PHYSFPS = 64;
+const int PHYSFRAMETIME = (1000 + PHYSFPS/2) / PHYSFPS;   // rounds to 16 ms
+// Constants applied per physics step (not per millisecond) must be rescaled by this when the
+// tick rate changes, so their effect per unit of time stays as it was at 200 Hz.
+const float PHYSSTEPSCALE = 200.0f/(1000.0f/PHYSFRAMETIME);
+
+// --- CS2-style movement (Source PM_Friction / PM_Accelerate / PM_AirAccelerate) --------------
+// Constants are kept in Source units so they can be compared 1:1 with CS2's own console cvars.
+// 1 AC cube == SVSCALE Source units, anchored on run speed (250 u/s <-> player maxspeed 16 cubes/s).
+static const float SVSCALE = 15.625f;                              // 250/16, Source units per cube
+static inline float svunits(float u) { return u / SVSCALE; }       // Source speed/accel -> cubes
+
+FVARP(sv_accelerate,    0,    5.5f, 100);   // ground acceleration (CS:GO/CS2 default)
+FVARP(sv_friction,      0,    4.8f, 100);   // ground friction (CS:GO/CS2 default)
+FVARP(sv_stopspeed,     0,    80,   1000);  // min ground speed friction fights, Source u/s
+FVARP(sv_airaccelerate, 0,    12,   100);   // air acceleration (CS:GO/CS2 default)
+FVARP(sv_airmaxspeed,   0,    30,   1000);  // air wishspeed cap (Source GetAirSpeedCap), u/s
+VARP(sv_bhopboost,      0,    0,    1);     // AC's double-jump 1.25x speed boost (0 = off)
+VARP(sv_crouchjump,     0,    0,    1);     // AC's crouch-in-air height bump (0 = off)
+
 void moveplayer(physent *pl, int moveres, bool local, int curtime)
 {
     bool water = false;
@@ -446,7 +469,8 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
         float chspeed = (pl->onfloor || pl->onladder || !pl->crouchedinair) ? 0.4f : 1.0f;
 
         const bool crouching = pl->crouching || (pl->eyeheight < pl->maxeyeheight && pl->eyeheight > 1.1f);
-        const float speed = curtime/(water ? 2000.0f : 1000.0f)*pl->maxspeed*(crouching && pl->state != CS_EDITING ? chspeed : 1.0f)*(pl==player1 && isfly ? flyspeed : 1.0f);
+        const float crouchmul = (crouching && pl->state != CS_EDITING) ? chspeed : 1.0f;
+        const float speed = curtime/(water ? 2000.0f : 1000.0f)*pl->maxspeed*crouchmul*(pl==player1 && isfly ? flyspeed : 1.0f);
         const float friction = water ? 20.0f : (pl->onfloor || isfly ? 6.0f : (pl->onladder ? 1.5f : 30.0f));
         const float fpsfric = max(friction/curtime*20.0f, 1.0f);
 
@@ -464,13 +488,63 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
         d.x += (float)(pl->strafe*cosf(RAD*(pl->yaw-180)));
         d.y += (float)(pl->strafe*sinf(RAD*(pl->yaw-180)));
 
-        float curfullspeed = d.magnitudexy();
+        // length of the raw wish direction: sqrt(2) when moving diagonally, which is the source
+        // of AC's +41% strafe-running. Only the optional double-jump boost still uses this.
+        const float wishfullspeed = d.magnitudexy();
 
-        pl->vel.mul(fpsfric-1.0f);   // slowly apply friction and direction to velocity, gives a smooth movement
-        pl->vel.add(d);
-        pl->vel.div(fpsfric);
+        const bool cs2move = !(isfly || water || pl->onladder);
+
+        if(!cs2move)
+        { // fly/spectate/edit, water and ladders keep the original cube movement
+            pl->vel.mul(fpsfric-1.0f);   // slowly apply friction and direction to velocity, gives a smooth movement
+            pl->vel.add(d);
+            pl->vel.div(fpsfric);
+        }
+        else
+        { // CS-style ground/air movement (Source PM_Friction / PM_Accelerate / PM_AirAccelerate).
+          // Normalising the wish direction removes AC's sqrt(2) diagonal speed bonus. pl->vel stays
+          // normalised (|vel| == 1 at full run speed), so the network, animation, sway and followcam
+          // consumers of pl->vel are unaffected.
+            const float wishlen = d.magnitudexy();
+            if(wishlen > 0.0001f) { d.x /= wishlen; d.y /= wishlen; }
+            d.z = 0.0f;
+            const float dt = curtime/1000.0f;
+            const float wishspeed = crouchmul;   // fraction of maxspeed we accelerate towards
+            // Keep AC's original vertical damping (the z component of the old vel/d blend) so the
+            // jump arc is untouched: only the horizontal movement model is being replaced here.
+            pl->vel.z *= (fpsfric-1.0f)/fpsfric;
+            if(pl->onfloor)
+            { // PM_Friction, then PM_Accelerate
+                float spd = pl->vel.magnitudexy()*pl->maxspeed;                // cubes/s
+                if(spd > 0.0001f)
+                {
+                    float control = max(spd, svunits(sv_stopspeed));
+                    float newspeed = max(spd - control*sv_friction*dt, 0.0f);  // counter-strafe stops you here
+                    pl->vel.x *= newspeed/spd;
+                    pl->vel.y *= newspeed/spd;
+                }
+                float addspeed = wishspeed - (pl->vel.x*d.x + pl->vel.y*d.y);
+                if(addspeed > 0.0f)
+                {
+                    float accelspeed = min(sv_accelerate*dt*wishspeed, addspeed);
+                    pl->vel.x += accelspeed*d.x;
+                    pl->vel.y += accelspeed*d.y;
+                }
+            }
+            else
+            { // PM_AirAccelerate: addspeed targets the capped air speed, accelspeed uses the full wishspeed
+                float cap = svunits(sv_airmaxspeed)/pl->maxspeed;
+                float addspeed = min(wishspeed, cap) - (pl->vel.x*d.x + pl->vel.y*d.y);
+                if(addspeed > 0.0f)
+                {
+                    float accelspeed = min(sv_airaccelerate*dt*wishspeed, addspeed);
+                    pl->vel.x += accelspeed*d.x;
+                    pl->vel.y += accelspeed*d.y;
+                }
+            }
+        }
         d = pl->vel;
-        d.mul(speed);
+        d.mul(cs2move ? speed/crouchmul : speed);   // crouch speed is applied via wishspeed in the CS2 path
 
         if(editfly)                // just apply velocity
         {
@@ -517,12 +591,12 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
                         {
                             pl->jumpd = true;
                             pl->jumpnext = false;
-                            bool doublejump = pl->lastjump && lastmillis - pl->lastjump < 250 && pl->strafe != 0 && pl->o.z - pl->eyeheight - pl->lastjumpheight > 0.2f;
+                            bool doublejump = sv_bhopboost && pl->lastjump && lastmillis - pl->lastjump < 250 && pl->strafe != 0 && pl->o.z - pl->eyeheight - pl->lastjumpheight > 0.2f;
                             pl->lastjumpheight = pl->o.z - pl->eyeheight;
                             pl->vel.z = 2.0f; // physics impulse upwards
-                            if(doublejump && curfullspeed > 0.1f) // more velocity on double jump
+                            if(doublejump && wishfullspeed > 0.1f) // more velocity on double jump
                             {
-                                pl->vel.mul(1.25f / max(pl->vel.magnitudexy() / curfullspeed, 1.0f));
+                                pl->vel.mul(1.25f / max(pl->vel.magnitudexy() / wishfullspeed, 1.0f));
                             }
                             if(water) // dampen velocity change even harder, gives correct water feel
                             {
@@ -539,7 +613,7 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
                     {
                         pl->timeinair += curtime;
                         if (pl->trycrouch && !pl->crouching && !pl->crouchedinair && pl->state!=CS_EDITING) {
-                            pl->vel.z += 0.3f;
+                            if(sv_crouchjump) pl->vel.z += 0.3f; // AC's crouch-in-air height bump (off by default)
                             pl->crouchedinair = true;
                         }
                     }
@@ -733,7 +807,7 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
         pl->pitch += pl->pitchvel*(curtime/1000.0f)*pl->maxspeed*(pl->crouching ? 0.75f : 1.0f);
         pl->pitchvel *= fric-3;
         pl->pitchvel /= fric;
-        if(pl->pitchvel < 0.05f && pl->pitchvel > 0.001f) pl->pitchvel -= ((playerent *)pl)->weaponsel->info.recoilbackfade/100.0f; // slide back
+        if(pl->pitchvel < 0.05f && pl->pitchvel > 0.001f) pl->pitchvel -= ((playerent *)pl)->weaponsel->info.recoilbackfade/100.0f*PHYSSTEPSCALE; // slide back (per-step, rescaled for the new tick rate)
         if(pl->pitchvel) fixcamerarange(pl); // fix pitch if necessary
     }
 
@@ -779,8 +853,6 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
     }
 }
 
-const int PHYSFPS = 200;
-const int PHYSFRAMETIME = 1000 / PHYSFPS;
 int physsteps = 0, physframetime = PHYSFRAMETIME, lastphysframe = 0;
 
 void physicsframe()          // optimally schedule physics frames inside the graphics frames

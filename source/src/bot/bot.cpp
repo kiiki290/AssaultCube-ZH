@@ -96,7 +96,7 @@ void CBot::Think()
         if(lastmillis-m_pMyEnt->lastdeath<1200)
         {
             m_pMyEnt->move = 0;
-            moveplayer(m_pMyEnt, 1, true);
+            moveplayer(m_pMyEnt, 3, true);   // 3 microsteps/step as at 200 Hz
         }
         else if (!m_arena && lastmillis-m_pMyEnt->lastdeath>5000) Spawn();
         SendBotInfo();
@@ -125,7 +125,7 @@ void CBot::Think()
     // Don't check for stuck if the bot doesn't want to move
     if (!m_pMyEnt->move && !m_pMyEnt->strafe) m_iStuckCheckDelay = max(m_iStuckCheckDelay, lastmillis+100.0f);
     // Move the bot
-    moveplayer(m_pMyEnt, 1, true);
+    moveplayer(m_pMyEnt, 3, true);   // 3 microsteps/step as at 200 Hz
     // Update bot info on all clients
     SendBotInfo();
 }
