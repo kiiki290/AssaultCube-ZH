@@ -1018,8 +1018,8 @@ VARP(sv_recoilaim, 0, 0, 1);        // 1 = recoil displaces the aim (classic AC)
 VARP(sv_recoilkick, 0, 0, 1);       // 1 = firing pushes the shooter backwards (classic AC); 0 = off (CS2)
 
 // movement inaccuracy, in the same spread units as guninfo::spread (placeholder magnitudes)
-FVARP(sv_moveinacc, 0, 30, 400);    // extra spread at full run speed
-FVARP(sv_airinacc, 0, 50, 400);     // extra spread while airborne
+FVARP(sv_moveinacc, 0, 400, 2000);  // extra spread at full run speed (magnitude found empirically in play)
+FVARP(sv_airinacc, 0, 600, 2000);   // extra spread while airborne (scaled from moveinacc, untested)
 FVARP(sv_crouchacc, 0, 0.5f, 1.0f); // spread multiplier while crouched (1.0 = no effect)
 FVARP(sv_firstshotfrac, 0, 0.0f, 1.0f); // burst spread on the first shot of a burst (0 = pinpoint)
 
