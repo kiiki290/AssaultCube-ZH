@@ -470,6 +470,7 @@ FVARFP(fov, 75, 90, 120, fovchanged());
 VARFP(scopefov, 5, 50, 60, fovchanged());
 VARP(spectfov, 5, 110, 120);
 VARP(spectfovremote, 0, 0, 1); // use spectfov or remote player's fov when spectating
+FVARP(viewmodelfov, 30, 60, 120); // vertical FOV of the first-person weapon model (CS2 viewmodel_fov default is 60)
 void fovchanged()
 {
     extern float autoscopesensscale;
@@ -949,7 +950,7 @@ void sethudgunperspective(bool on)
     if(on)
     {
         glScalef(1, 1, 0.5f); // fix hudugns colliding with map geometry
-        setperspective(75.0f, aspect, 0.3f, farplane); // y fov fixed at 75 degrees
+        setperspective(viewmodelfov, aspect, 0.3f, farplane); // vertical FOV of the viewmodel, independent of world `fov`
     }
     else setperspective(fovy, aspect, 0.15f, farplane);
     glMatrixMode(GL_MODELVIEW);

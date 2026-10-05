@@ -1010,33 +1010,90 @@ static int recoilincrease = 2; //VAR(recoilincrease, 1, 2, 10);
 static int recoilbase = 40;//VAR(recoilbase, 0, 40, 1000);
 static int maxrecoil = 1000;//VAR(maxrecoil, 0, 1000, 1000);
 
+// CS2-style recoil: the climb goes into the bullet pattern, the crosshair is not displaced and the
+// shooter is not pushed backwards. Set sv_recoilaim/sv_recoilkick to 1 to get the original AC feel.
+FVARP(sv_punchscale, 0, 0.6f, 10);  // bullet climb in degrees per unit of the gun's recoil value
+FVARP(sv_punchmax, 0, 15, 90);      // cap on the accumulated climb within one burst (degrees)
+VARP(sv_recoilaim, 0, 0, 1);        // 1 = recoil displaces the aim (classic AC); 0 = bullets only (CS2)
+VARP(sv_recoilkick, 0, 0, 1);       // 1 = firing pushes the shooter backwards (classic AC); 0 = off (CS2)
+
+// movement inaccuracy, in the same spread units as guninfo::spread (placeholder magnitudes)
+FVARP(sv_moveinacc, 0, 30, 400);    // extra spread at full run speed
+FVARP(sv_airinacc, 0, 50, 400);     // extra spread while airborne
+FVARP(sv_crouchacc, 0, 0.5f, 1.0f); // spread multiplier while crouched (1.0 = no effect)
+FVARP(sv_firstshotfrac, 0, 0.0f, 1.0f); // burst spread on the first shot of a burst (0 = pinpoint)
+
+// Direction vector for a view angle, using the same convention as the projectile code below
+// (weapon.cpp: x = sin(yaw)*cos(pitch), y = -cos(yaw)*cos(pitch), z = sin(pitch)).
+static inline vec viewdir(float yaw, float pitch)
+{
+    float cp = cosf(RAD*pitch);
+    return vec(sinf(RAD*yaw)*cp, -cosf(RAD*yaw)*cp, sinf(RAD*pitch));
+}
+
 void weapon::attackphysics(vec &from, vec &to) // physical fx to the owner
 {
     const guninfo &g = info;
     vec unitv;
-    float dist = to.dist(from, unitv);
+    float dist = to.dist(from, unitv);   // NB: unitv is to-from and is NOT normalised (|unitv| == dist)
+    vec aimdir(unitv);
+    if(dist > 0.0001f) aimdir.div(dist); // proper unit vector along the shot
     float f = dist/1000;
-    int spread = dynspread();
+    // base (burst / standing) spread, plus movement, airborne and crouch terms. pl->vel is
+    // normalised (1.0 == full run speed). The magnitudes are placeholders pending CS2 data, but
+    // the structure matches CS2: the first shot of a burst carries no burst spread, while the
+    // movement and airborne penalties always apply.
+    float basespread = dynspread();
+    if(shots <= 1) basespread *= sv_firstshotfrac;
+    int spread = (int)(basespread + sv_moveinacc*owner->vel.magnitudexy()
+                       + (owner->onfloor ? 0.0f : sv_airinacc));
+    if(owner->crouching) spread = (int)(spread*sv_crouchacc);
     float recoil = dynrecoil()*-0.01f;
 
-    // spread
+    // spread: a random point in a disc perpendicular to the shot, uniform by area. (The old code
+    // picked an axis-aligned cube, which favoured the diagonal corners. Max radius is unchanged.)
     if(spread>1)
     {
-        #define RNDD (rnd(spread)-spread/2)*f
-        vec r(RNDD, RNDD, RNDD);
-        to.add(r);
-        #undef RNDD
+        float maxr = spread*0.5f*f;
+        float ang = rndscale(360.0f)*RAD;
+        float rad = maxr*sqrtf(rndscale(1.0f));   // sqrt keeps the density uniform over the disc
+        vec right, up;
+        up.orthogonal(aimdir); up.normalize();
+        right.cross(aimdir, up); right.normalize();
+        to.add(vec(right).mul(cosf(ang)*rad));
+        to.add(vec(up).mul(sinf(ang)*rad));
     }
     // kickback & recoil
+    float kick;
     if(recoiltest)
-    {
-        owner->vel.add(vec(unitv).mul(recoil/dist).mul(owner->crouching ? 0.75 : 1.0f));
-        owner->pitchvel = min(powf(shots/(float)(recoilincrease), 2.0f)+(float)(recoilbase)/10.0f, (float)(maxrecoil)/10.0f);
-    }
+        kick = min(powf(shots/(float)(recoilincrease), 2.0f)+(float)(recoilbase)/10.0f, (float)(maxrecoil)/10.0f);
     else
-    {
+        kick = min(powf(shots/(float)(g.recoilincrease), 2.0f)+(float)(g.recoilbase)/10.0f, (float)(g.maxrecoil)/10.0f);
+
+    if(sv_recoilkick)
         owner->vel.add(vec(unitv).mul(recoil/dist).mul(owner->crouching ? 0.75 : 1.0f));
-        owner->pitchvel = min(powf(shots/(float)(g.recoilincrease), 2.0f)+(float)(g.recoilbase)/10.0f, (float)(g.maxrecoil)/10.0f);
+
+    if(sv_recoilaim)
+        owner->pitchvel = kick;                 // classic AC: the recoil displaces the aim
+    else
+    { // CS2: the recoil climbs through the bullet pattern while the crosshair stays where you aim.
+      // shots resets when the trigger is released, so shots<=1 marks the start of a new burst.
+        if(shots <= 1) owner->punchpitch = owner->punchyaw = 0.0f;
+        // Bend this bullet by the recoil accumulated from the PREVIOUS shots, then add this shot's
+        // own kick. That way the first shot of a burst leaves the barrel exactly where the crosshair
+        // points (CS2 behaviour) instead of being pushed upwards by its own recoil.
+        if(owner->punchpitch > 0.0f)
+        {
+            vec bend = viewdir(owner->yaw + owner->punchyaw, owner->pitch + owner->punchpitch);
+            bend.sub(viewdir(owner->yaw, owner->pitch));   // small-angle offset from the aim direction
+            vec dir = aimdir;
+            dir.add(bend);
+            dir.normalize();
+            // add only the bend: assigning "to = from + dir*dist" would wipe the spread offset
+            // that was applied to "to" just above.
+            to.add(vec(dir).sub(aimdir).mul(dist));
+        }
+        owner->punchpitch = min(owner->punchpitch + kick*sv_punchscale, sv_punchmax);
     }
 }
 
