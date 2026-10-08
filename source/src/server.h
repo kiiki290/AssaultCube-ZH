@@ -551,17 +551,22 @@ uchar entscale[MAXENTTYPES][7] =
 
 // see entity.h:61: struct itemstat { int add, start, max, sound; };
 // Please update ./ac_website/htdocs/docs/introduction.html if these figures change.
+// cs2-feel: start = magsize + the weapon's CS2 reserve, so a spawn hands out exactly the
+// CS2 loadout (entity.h splits it back into mag + reserve). max is set equal to start for
+// every weapon - uniform, and high enough that an ammo pickup tops you back up to the CS2
+// stock instead of clamping below it. `add` (what one pickup gives) is left alone: it is an
+// AC concept with no CS2 counterpart.
 itemstat ammostats[NUMGUNS] =
 {
     {  1,  1,   1,  S_ITEMAMMO  },   // knife dummy
-    { 20, 60, 100,  S_ITEMAMMO  },   // pistol
-    { 15, 30,  30,  S_ITEMAMMO  },   // carbine
-    { 14, 28,  21,  S_ITEMAMMO  },   // shotgun
-    { 60, 90,  90,  S_ITEMAMMO  },   // subgun
-    { 10, 20,  15,  S_ITEMAMMO  },   // sniper
-    { 40, 60,  60,  S_ITEMAMMO  },   // assault
+    { 20, 36,  36,  S_ITEMAMMO  },   // pistol   12 + 24  (USP-S)
+    { 15,125, 125,  S_ITEMAMMO  },   // carbine  25 + 100 (FAMAS)
+    { 14, 40,  40,  S_ITEMAMMO  },   // shotgun   8 + 32  (Nova)
+    { 60, 90,  90,  S_ITEMAMMO  },   // subgun   30 + 60  (MP9)
+    { 10, 15,  15,  S_ITEMAMMO  },   // sniper    5 + 10  (AWP)
+    { 40,120, 120,  S_ITEMAMMO  },   // assault  30 + 90  (AK-47)
     {  1,  0,   3,  S_ITEMAMMO  },   // grenade
-    {100,  0, 100,  S_ITEMAKIMBO}    // akimbo
+    {100,  0,  90,  S_ITEMAKIMBO}    // akimbo   30 + 60  (Elite)
 };
 
 itemstat powerupstats[I_ARMOUR-I_HEALTH+1] =
@@ -580,14 +585,14 @@ guninfo guns[NUMGUNS] =
     //modelname                 sound                reloadtime        damage    projspeed  spread     magsize    mKB      reB          reF        isauto
     //             title                      reload       attackdelay      piercing     part     recoil       mKR     reI        reM        pFX
     { "knife",   "Knife",        S_KNIFE,   S_NULL,     0,      500,    50, 100,     0,   0,  1,    1,   1,    0,  0,   0,   0,    0,    0,   1,   false },
-    { "pistol",  "Pistol",       S_PISTOL,  S_RPISTOL,  1400,   160,    18,   0,     0,   0, 53,   10,   10,   6,  5,   6,  35,   58,   125,  1,   false },
-    { "carbine", "TMP-M&A CB",   S_CARBINE, S_RCARBINE, 1800,   720,    60,  40,     0,   0, 10,   60,   10,   4,  4,  10,  60,   60,   150,  1,   false },
-    { "shotgun", "V-19 CS",      S_SHOTGUN, S_RSHOTGUN, 2400,   880,    1,    0,     0,   0,  1,   35,    7,   9,  9,  10, 140,  140,   125,  1,   false },   // CAUTION dmg only sane for server!
+    { "pistol",  "Pistol",       S_PISTOL,  S_RPISTOL,  1400,   160,    18,   0,     0,   0, 53,   10,   12,   6,  5,   6,  35,   58,   125,  1,   false },
+    { "carbine", "TMP-M&A CB",   S_CARBINE, S_RCARBINE, 1800,   720,    60,  40,     0,   0, 10,   60,   25,   4,  4,  10,  60,   60,   150,  1,   false },
+    { "shotgun", "V-19 CS",      S_SHOTGUN, S_RSHOTGUN, 2400,   880,    1,    0,     0,   0,  1,   35,    8,   9,  9,  10, 140,  140,   125,  1,   false },   // CAUTION dmg only sane for server!
     { "subgun",  "A-ARD/10 SMG", S_SUBGUN,  S_RSUBGUN,  1650,   80,     16,   0,     0,   0, 45,   15,   30,   1,  2,   5,  25,   50,   188,  1,   true  },
     { "sniper",  "AD-81 SR",     S_SNIPER,  S_RSNIPER,  1950,   1500,   82,  25,     0,   0, 50,   50,    5,   4,  4,  10,  85,   85,   100,  1,   false },
-    { "assault", "MTP-57 AR",    S_ASSAULT, S_RASSAULT, 2000,   120,    22,   0,     0,   0, 18,   30,   20,   0,  2,   3,  25,   50,   115,  1,   true  },
+    { "assault", "MTP-57 AR",    S_ASSAULT, S_RASSAULT, 2000,   120,    22,   0,     0,   0, 18,   30,   30,   0,  2,   3,  25,   50,   115,  1,   true  },
     { "grenade", "Grenades",     S_NULL,    S_NULL,     1000,   650,    200,  0,    20,   6,  1,    1,   1,    3,  1,   0,   0,    0,    0,   3,   false },
-    { "pistol",  "Akimbo",       S_PISTOL,  S_RAKIMBO,  1400,   80,     18,   0,     0,   0, 50,   10,   20,   6,  5,   4,  15,   25,   115,  1,   true  },
+    { "pistol",  "Akimbo",       S_PISTOL,  S_RAKIMBO,  1400,   80,     18,   0,     0,   0, 50,   10,   30,   6,  5,   4,  15,   25,   115,  1,   true  },
 };
 
 const char *gunnames[NUMGUNS + 1];
