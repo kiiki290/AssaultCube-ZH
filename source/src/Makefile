@@ -360,6 +360,7 @@ weapon.o: cube.h platform.h tools.h geom.h model.h protocol.h sound.h
 weapon.o: weapon.h entity.h world.h command.h varray.h vote.h console.h
 weapon.o: protos.h bot/bot.h bot/bot_util.h bot/bot_waypoint.h bot/ac_bot.h
 weapon.o: hudgun.h
+weapon.o: cs2weapons.h
 wizard.o: cube.h platform.h tools.h geom.h model.h protocol.h sound.h
 wizard.o: weapon.h entity.h world.h command.h varray.h vote.h console.h
 wizard.o: protos.h

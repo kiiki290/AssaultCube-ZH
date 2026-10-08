@@ -19,6 +19,21 @@ struct weapon
     virtual float dynrecoil();
     int reloading, lastaction;
 
+    // cs2-feel: running accuracy state for the CS2 model (values live in cs2weapons.h).
+    // It sits on the weapon because that is what is per-(player, weapon), and these
+    // objects are created once per player and never destroyed - so this state survives
+    // death, respawn and map changes, which is why it carries a life stamp.
+    float cs2fireinacc;      // accumulated m_flInaccuracyFire, in CS2 units
+    int cs2lasttick, cs2epoch;
+    // Recoil state, again per-(player, weapon): the shot counter that walks the generated
+    // pattern, plus the two clocks (the last shot, and the last integration step).
+    float cs2recoilindex;    // CS2's m_flRecoilIndex
+    int cs2lastshot, cs2recoiltick;
+    // Which CFiringModeFloat index to read: 0 normally, 1 for the scoped AWP.
+    virtual int cs2firemode() const { return 0; }
+    // This weapon's CS2 top speed, in AC's maxspeed units.
+    float cs2maxspeed() const;
+
     virtual bool attack(vec &targ) = 0;
     virtual void attackfx(const vec &from, const vec &to, int millis) = 0;
     virtual void attackphysics(vec &from, vec &to);
@@ -109,6 +124,7 @@ struct sniperrifle : gun
 
     int dynspread();
     float dynrecoil();
+    int cs2firemode() const;   // 0 = hipfire, 1 = scoped
     bool selectable();
     void onselecting(bool sound);
     void ondeselecting();

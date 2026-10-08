@@ -928,6 +928,9 @@ extern void writeallxmaps();
 extern int loadallxmaps();
 
 // physics
+// Source engine units -> AC cubes; the CS2 weapon model converts per-weapon speeds with it too
+extern float svunits(float u);
+extern float acunits(float c);
 extern float raycube(const vec &o, const vec &ray, vec &surface);
 extern bool raycubelos(const vec &from, const vec &to, float margin = 0);
 extern int cornertest(int x, int y, int &bx, int &by, int &bs, sqr *&s, sqr *&h);
@@ -982,6 +985,7 @@ extern bool intersect(entity *e, const vec &from, const vec &to, vec *end = NULL
 extern void damageeffect(int damage, playerent *d);
 extern void tryreload(playerent *p);
 extern void checkweaponstate();
+extern void cs2weaponupdate();   // per-tick CS2 weapon state: per-weapon speed, accuracy and recoil
 extern int burstshotssettings[NUMGUNS];
 
 // entities:

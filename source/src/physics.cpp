@@ -408,7 +408,8 @@ const float PHYSSTEPSCALE = 200.0f/(1000.0f/PHYSFRAMETIME);
 // Constants are kept in Source units so they can be compared 1:1 with CS2's own console cvars.
 // 1 AC cube == SVSCALE Source units, anchored on run speed (250 u/s <-> player maxspeed 16 cubes/s).
 static const float SVSCALE = 15.625f;                              // 250/16, Source units per cube
-static inline float svunits(float u) { return u / SVSCALE; }       // Source speed/accel -> cubes
+float svunits(float u) { return u / SVSCALE; }                     // Source speed/accel -> cubes
+float acunits(float c) { return c * SVSCALE; }                     // cubes -> Source units
 
 FVARP(sv_accelerate,    0,    5.5f, 100);   // ground acceleration (CS:GO/CS2 default)
 FVARP(sv_friction,      0,    5.2f, 100);   // ground friction (CS2 default, from a cvarlist dump)
@@ -636,7 +637,6 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
 
             drop = dropf*curtime/gravity/100/moveres;              // at high fps, gravity kicks in too fast
             rise = speed/moveres/1.2f;                             // extra smoothness when lifting up stairs
-            if(pl->maxspeed-16.0f>0.5f) pl += 0xF0F0;
         }
     }
 

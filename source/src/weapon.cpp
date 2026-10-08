@@ -3,6 +3,7 @@
 #include "cube.h"
 #include "bot/bot.h"
 #include "hudgun.h"
+#include "cs2weapons.h"
 
 VARP(autoreload, 0, 1, 1);
 VARP(akimboautoswitch, 0, 1, 1);
@@ -934,7 +935,8 @@ COMMAND(accuracyreset, "");
 // weapon
 
 weapon::weapon(class playerent *owner, int type) : type(type), owner(owner), info(guns[type]),
-    ammo(owner->ammo[type]), mag(owner->mag[type]), gunwait(owner->gunwait[type]), reloading(0)
+    ammo(owner->ammo[type]), mag(owner->mag[type]), gunwait(owner->gunwait[type]), shots(0),
+    reloading(0), cs2fireinacc(0.0f), cs2lasttick(0), cs2epoch(-1)
 {
 }
 
@@ -1013,7 +1015,9 @@ static int maxrecoil = 1000;//VAR(maxrecoil, 0, 1000, 1000);
 // CS2-style recoil: the climb goes into the bullet pattern, the crosshair is not displaced and the
 // shooter is not pushed backwards. Set sv_recoilaim/sv_recoilkick to 1 to get the original AC feel.
 FVARP(sv_punchscale, 0, 0.6f, 10);  // bullet climb in degrees per unit of the gun's recoil value
-FVARP(sv_punchmax, 0, 15, 90);      // cap on the accumulated climb within one burst (degrees)
+FVARP(sv_punchmax, 0, 45, 90);      // backstop on the accumulated climb (degrees); the CS2 model
+                                    // bounds itself by decay, and the hardest kick of the nine
+                                    // (the shotgun) peaks near 19, so this should never bite
 VARP(sv_recoilaim, 0, 0, 1);        // 1 = recoil displaces the aim (classic AC); 0 = bullets only (CS2)
 VARP(sv_recoilkick, 0, 0, 1);       // 1 = firing pushes the shooter backwards (classic AC); 0 = off (CS2)
 
@@ -1022,6 +1026,390 @@ FVARP(sv_moveinacc, 0, 400, 2000);  // extra spread at full run speed (magnitude
 FVARP(sv_airinacc, 0, 600, 2000);   // extra spread while airborne (scaled from moveinacc, untested)
 FVARP(sv_crouchacc, 0, 0.5f, 1.0f); // spread multiplier while crouched (1.0 = no effect)
 FVARP(sv_firstshotfrac, 0, 0.0f, 1.0f); // burst spread on the first shot of a burst (0 = pinpoint)
+
+// Per-weapon constants extracted from a Counter-Strike 2 install. Field order and
+// meaning are documented in cs2weapons.h; the values are CS2's own units, so they
+// can be diffed against the data package directly. The [2] pairs are CS2's
+// CFiringModeFloat = { primary, alternate (scoped/burst) }.
+const cs2guninfo cs2guns[NUMGUNS] =
+{
+//   spread            inaccStand        inaccCrouch       inaccMove         inaccFire
+//   inaccJump         jumpInit  apex   inaccLand         recStand  recCrouch recSFinal recCFinal trans
+//   recoilMag         magVar    angleVar         seed    auto speed        bullets
+
+    // GUN_KNIFE - "melee". No spread or recoil at all; the entry exists for its maxspeed.
+    { {0,0}, {0,0}, {0,0}, {0,0}, {0,0}, {0,0}, 0, 0, {0,0},
+      1, 1, -1, -1, 0, 0, {0,0}, {0,0}, {0,0}, 26701, false, {250,250}, 1 },
+
+    // GUN_PISTOL - weapon_usp_silencer_prefab. Pistols punish spamming hardest:
+    // inaccFire 0.071 is the largest per-shot jump of any weapon here.
+    { {0.0025,0.0015}, {0.0049,0.0049}, {0.00368,0.00368}, {0.01387,0.01387}, {0.071,0.052},
+      {0.09448,0.09448}, 0.0966, 0, {0.000191,0.000198},
+      0.349532, 0.291277, 0.349532, 0.291277, 3, 10, {29,23}, {0,0}, {0,0}, 5426, false, {240,240}, 1 },
+
+    // GUN_CARBINE - weapon_famas_prefab (light 220 u/s rifle tier; galilar is the 215 tier
+    // already covered 1:1 by GUN_ASSAULT as the AK).
+    { {0.0006,0.0006}, {0.00759,0.00369}, {0.0055,0.00325}, {0.09934,0.09934}, {0.00605,0.00335},
+      {0.11039,0.11039}, 0.09477, 0, {0.000205,0.000205},
+      0.25, 0.12, 0.5, 0.48, 2, 5, {20,20}, {1,1}, {60,50}, 39623, true, {220,220}, 1 },
+
+    // GUN_SHOTGUN - weapon_nova_prefab. m_flSpread 0.04 is the big cone CS2 gives shotguns;
+    // 9 pellets, but AC keeps its own createrays() pellet model on top of this.
+    { {0.04,0.04}, {0.007,0.007}, {0.00525,0.00525}, {0.03675,0.03675}, {0.00972,0.00972},
+      {0.12631,0.12631}, 0.1097, 0, {0.000236,0.000236},
+      0.460517, 0.328941, 0.460517, 0.328941, 2, 5, {143,143}, {22,22}, {20,20}, 7763, false, {220,220}, 9 },
+
+    // GUN_SUBGUN - weapon_mp9_prefab
+    { {0.0006,0.0006}, {0.009,0.009}, {0.008,0.008}, {0.02904,0.02904}, {0.0037,0.0037},
+      {0.05,0.05}, 0.03728, 0, {5.6e-05,5.6e-05},
+      0.25789, 0.184207, 0.25789, 0.184207, 2, 5, {21,21}, {1,1}, {70,70}, 50729, true, {240,240}, 1 },
+
+    // GUN_SNIPER - weapon_awp_prefab. Mode 0 is hipfire (stand inaccuracy 0.0808: useless),
+    // mode 1 is scoped (0.002: pinpoint), and scoping halves m_flMaxSpeed 200 -> 100.
+    { {0.0002,0.0002}, {0.0808,0.002}, {0.0606,0.0015}, {0.17648,0.17648}, {0.05385,0.05385},
+      {0.13383,0.13383}, 0.17286, 0, {0.000307,0.0001},
+      0.34539, 0.24671, 0.34539, 0.24671, 2, 5, {78,25}, {15,2}, {20,20}, 4100, false, {200,100}, 1 },
+
+    // GUN_ASSAULT - weapon_ak47_prefab. The reference weapon: recovery ramps from 0.368 s to
+    // 0.506 s between shots 2 and 5, which is what makes a sustained AK spray stay inaccurate.
+    { {0.0006,0.0006}, {0.00641,0.00641}, {0.00481,0.00481}, {0.17506,0.17506}, {0.0078,0.0078},
+      {0.14076,0.14076}, 0.10094, 0, {0.000242,0.000242},
+      0.368, 0.305257, 0.506, 0.419728, 2, 5, {30,30}, {0,0}, {70,70}, 223, true, {215,215}, 1 },
+
+    // GUN_GRENADE - weapon_hegrenade_prefab. Like the knife: carried for its maxspeed.
+    { {0,0}, {0,0}, {0,0}, {0,0}, {0,0}, {0,0}, 0, 0, {0,0},
+      1, 1, -1, -1, 0, 0, {0,0}, {0,0}, {0,0}, 52132, false, {245,245}, 1 },
+
+    // GUN_AKIMBO - weapon_elite_prefab
+    { {0.002,0.002}, {0.007,0.01}, {0.00525,0.0075}, {0.01785,0.01785}, {0.01116,0.01196},
+      {0.15842,0.15842}, 0.09586, 0, {0.000255,0.000255},
+      0.524989, 0.437491, 0.524989, 0.437491, 3, 10, {27,27}, {4,4}, {20,20}, 24563, false, {240,240}, 1 },
+};
+
+// --- per-weapon movement speed ----------------------------------------------------
+// CS2 gives every weapon its own absolute top speed (m_flMaxSpeed, Source units/s) and
+// its sv_accelerate_use_weapon_speed - measured "true" in the reference install - aims
+// the accelerator at that instead of one shared constant. AC has a single player value
+// (entity.h sets maxspeed = 16.0f), so the equivalent is to write pl->maxspeed every
+// tick from the weapon in hand. The anchor is the same one the movement model uses:
+// 250 u/s <-> 16 cubes/s (SVSCALE).
+VARP(sv_cs2weapons, 0, 1, 1);            // master switch: 0 = classic AC weapon behaviour
+VARP(sv_weaponspeed, 0, 1, 1);           // per-weapon top speed
+FVARP(sv_speedscale, 0.0f, 1.0f, 2.0f);  // trim on the whole conversion, for calibration
+
+static const float ACMAXSPEED = 16.0f;   // the player value from entity.h, for the revert path
+
+float weapon::cs2maxspeed() const
+{
+    return svunits(cs2guns[type].maxspeed[cs2firemode()]) * sv_speedscale;
+}
+
+// --- CS2 accuracy model -----------------------------------------------------------
+// Ported from the CS:GO logic (CWeaponCSBase::GetInaccuracy / UpdateAccuracyPenalty /
+// GetRecoveryTime), which the CS2 weapon data still speaks - see cs2weapons.h.
+//
+// cs2fireinacc holds CS2's m_fAccuracyPenalty, in CS2 units: each shot adds the weapon's
+// InaccuracyFire and it decays back towards the current stance's base over the weapon's
+// recovery time. The movement penalty is deliberately NOT part of that accumulator -
+// CS2 computes it fresh on every shot and it never persists, which is exactly why a
+// counter-strafe snaps your accuracy back with no ramp.
+VARP(sv_weaponaccuracy, 0, 1, 1);                   // 0 = the classic AC spread model
+FVARP(sv_accuracyfactor, 0.0f, 1000.0f, 4000.0f);   // CS2 spread units -> AC spread units (derived)
+FVARP(sv_jumpimpulse, 1.0f, 301.993377f, 1000.0f);  // CS2's sv_jump_impulse; scales the airborne curve
+FVARP(sv_airspreadscale, 0.0f, 1.0f, 1.0f);         // CS2's weapon_air_spread_scale
+
+// Movement curve constants, read from the CS:GO source rather than fitted:
+// cs_shareddefs.cpp's CS_PLAYER_SPEED_DUCK_MODIFIER and weapon_csbase.cpp's
+// MOVEMENT_CURVE01_EXPONENT. Below the crouch speed there is no penalty at all, it maxes
+// out at 95% of run speed (so jitter at the top doesn't make it flicker), and the result
+// is raised to a power that turns the low end into something close to a hard floor.
+static const float CS2_SPEED_DUCK_MODIFIER = 0.34f;
+static const float CS2_MOVEMENT_CURVE_EXPONENT = 0.25f;
+
+static inline float cs2remap(float v, float lo, float hi, float dlo, float dhi)
+{
+    if(hi <= lo) return v < lo ? dlo : dhi;
+    return dlo + clamp((v - lo)/(hi - lo), 0.0f, 1.0f)*(dhi - dlo);
+}
+
+// What this weapon recovers back to for a given stance (CS2's UpdateAccuracyPenalty floor).
+// Airborne it adds the flat InaccuracyJump on top of the standing value; the velocity-
+// dependent part of the air penalty is separate and applies per shot.
+static float cs2basepenalty(const cs2guninfo &c, int mode, bool onfloor, bool crouching)
+{
+    if(!onfloor) return c.inaccStand[mode] + c.inaccJump[mode]*sv_airspreadscale;
+    return crouching ? c.inaccCrouch[mode] : c.inaccStand[mode];
+}
+
+// CS2's GetRecoveryTime, in seconds. A sustained spray recovers more slowly: the time ramps
+// from RecoveryTime* to RecoveryTime*Final between two bullet counts of the burst. Being
+// airborne costs a flat 4x. CS2 ramps off a per-shot index that decays over time; AC's
+// per-burst "shots" counter is the closest equivalent (it resets when the trigger is let go).
+static float cs2recoverytime(const cs2guninfo &c, int mode, bool onfloor, bool crouching, int shots)
+{
+    if(!onfloor) return c.recoveryCrouch*4.0f;
+    float first = crouching ? c.recoveryCrouch : c.recoveryStand;
+    float final = crouching ? c.recoveryCrouchFinal : c.recoveryStandFinal;
+    if(final < 0.0f || c.recoveryEndBullet <= c.recoveryStartBullet) return first; // no ramp defined
+    return first + clamp((shots - c.recoveryStartBullet)/(float)(c.recoveryEndBullet - c.recoveryStartBullet), 0.0f, 1.0f)*(final - first);
+}
+
+// One step of CS2's decay: "90% of the accumulated penalty is gone after one recovery time".
+// The value is never allowed to fall below the stance's base, so leaving the ground snaps it
+// *up* immediately; dtms == 0 is a no-op, which makes this safe to call more than once a tick.
+static float cs2decaystep(float inacc, const cs2guninfo &c, int mode, bool onfloor, bool crouching, int shots, int dtms)
+{
+    float base = cs2basepenalty(c, mode, onfloor, crouching);
+    if(inacc <= base) return base;
+    if(dtms <= 0) return inacc;
+    float rt = cs2recoverytime(c, mode, onfloor, crouching, shots);
+    if(rt <= 0.0f) return base;
+    return base + (inacc - base)*expf(-(logf(10.0f)/rt)*(dtms/1000.0f));
+}
+
+// --- CS2 recoil model --------------------------------------------------------------
+// The other half of the weapon model: CWeaponCSBase::Recoil, CCSPlayer::KickBack and
+// CCSGameMovement::DecayAimPunchAngle, again read from the CS:GO logic that the CS2
+// weapon data still speaks. It replaces "the recoil kicks the aim by a formula of the
+// shot count" with the two-part model CS2 actually runs:
+//
+//   1. The pattern is generated, not authored. WeaponRecoilData::GenerateRecoilTable
+//      seeds a Numerical-Recipes ran1 stream with the weapon's m_nRecoilSeed and draws
+//      64 (angle, magnitude) pairs; full-auto weapons ease each draw into the previous
+//      one by weapon_recoil_variance and scale the first few down by weapon_recoil_
+//      suppression_*. That easing is the whole trick - independent random kicks would be
+//      unlearnable, a smoothed random walk is a pattern you can memorise. It is also why
+//      the AK, whose magnitude variance is 0, climbs steadily and only swings sideways.
+//   2. Recoil() hands the pair to KickBack, which adds it to an angular *velocity*
+//      rather than to a displacement. A burst therefore ramps up, keeps climbing past
+//      its last shot, and is bled off by DecayAimPunchAngle once you let go. The bullet
+//      is fired before Recoil() is called, so a shot is never bent by its own kick -
+//      which is what makes the first shot of a burst leave exactly along the aim.
+//
+// Both halves of the pair are in degrees and degrees/second, and what accumulates is a
+// raw punch angle with no scale of its own: weapon_recoil_scale (sv_recoilscale) is
+// applied when the punch is turned into a bullet direction, the same place CS2 applies
+// it. See also cs2weapons.h for the table these constants come from.
+VARP(sv_recoil, 0, 1, 1);                    // 0 = the classic AC recoil formula
+FVARP(sv_recoilscale, 0.0f, 2.0f, 10.0f);    // CS2's weapon_recoil_scale
+FVARP(sv_recoilvariance, 0.0f, 0.55f, 1.0f); // weapon_recoil_variance (pattern easing)
+VARP(sv_recoilsuppressshots, 0, 4, 16);      // weapon_recoil_suppression_shots
+FVARP(sv_recoilsuppressfactor, 0.0f, 0.75f, 1.0f); // weapon_recoil_suppression_factor
+FVARP(sv_recoilveldecay, 0.0f, 4.5f, 20.0f); // weapon_recoil_vel_decay (punch velocity)
+FVARP(sv_recoildecayexp, 0.0f, 8.0f, 40.0f); // weapon_recoil_decay2_exp  (punch)
+FVARP(sv_recoildecaylin, 0.0f, 18.0f, 60.0f);// weapon_recoil_decay2_lin  (punch)
+FVARP(sv_recoilindexdecay, 0.0f, 2.0f, 20.0f); // weapon_recoil_decay_coefficient
+
+// CS2's RNG, and it has to be CS2's exactly: the pattern is nothing but the sequence
+// this produces. It is Numerical Recipes' ran1 - a Park-Miller generator with the
+// Bays-Durham shuffle on top, which is why the values are not merely "some random
+// numbers" but a specific, reproducible walk.
+static const int CS2R_IA = 16807, CS2R_IM = 2147483647, CS2R_IQ = 127773, CS2R_IR = 2836;
+static const int CS2R_NTAB = 32;
+static const int CS2R_NDIV = 1 + (CS2R_IM - 1)/CS2R_NTAB;
+// AM is CS:GO's `1.0/IM` - a double division, so it is written as one here rather than
+// letting the int widen to a float and landing on the neighbouring 2^-31.
+static const float CS2R_AM = (float)(1.0/2147483647.0), CS2R_RNMX = 1.0f - 1.2e-7f;
+
+struct cs2random
+{
+    int idum, iy, iv[32];
+    void setseed(int s) { idum = s < 0 ? s : -s; iy = 0; }
+    int generate()
+    {
+        int j, k;
+        if(idum <= 0 || !iy)
+        {   // first call (or a zero seed): scramble the shuffle table from the seed
+            idum = -idum < 1 ? 1 : -idum;
+            for(j = CS2R_NTAB + 7; j >= 0; --j)
+            {
+                k = idum/CS2R_IQ;
+                idum = CS2R_IA*(idum - k*CS2R_IQ) - CS2R_IR*k;
+                if(idum < 0) idum += CS2R_IM;
+                if(j < CS2R_NTAB) iv[j] = idum;
+            }
+            iy = iv[0];
+        }
+        k = idum/CS2R_IQ;
+        idum = CS2R_IA*(idum - k*CS2R_IQ) - CS2R_IR*k;
+        if(idum < 0) idum += CS2R_IM;
+        j = iy/CS2R_NDIV;
+        iy = iv[j];
+        iv[j] = idum;
+        return iy;
+    }
+    float range(float lo, float hi)
+    {
+        float f = CS2R_AM*generate();
+        if(f > CS2R_RNMX) f = CS2R_RNMX;
+        return f*(hi - lo) + lo;
+    }
+};
+
+// The pattern the generator fills: one row per shot before it wraps, in CS2.
+enum { CS2_RECOIL_SHOTS = 64 };
+struct cs2recoiloffset { float angle, magnitude; };
+struct cs2recoilpattern { cs2recoiloffset off[CS2_RECOIL_SHOTS]; };
+
+static cs2recoilpattern cs2recoiltable[NUMGUNS][2];
+static bool cs2recoiltablebuilt = false;
+static float cs2recoiltablevariance = -1.0f, cs2recoiltablesuppressfactor = -1.0f;
+static int cs2recoiltablesuppressshots = -1;
+
+static void cs2buildrecoiltable()
+{
+    cs2recoiltablebuilt = true;
+    cs2recoiltablevariance = sv_recoilvariance;
+    cs2recoiltablesuppressshots = sv_recoilsuppressshots;
+    cs2recoiltablesuppressfactor = sv_recoilsuppressfactor;
+    for(int g = 0; g < NUMGUNS; ++g)
+    {
+        const cs2guninfo &c = cs2guns[g];
+        for(int mode = 0; mode < 2; ++mode)
+        {
+            cs2random r;
+            r.setseed(c.recoilSeed);
+            float angle = 0.0f, magnitude = 0.0f;
+            for(int j = 0; j < CS2_RECOIL_SHOTS; ++j)
+            {
+                // m_flRecoilAngle is 0 on every weapon mapped here, so the angle the
+                // pattern wobbles around is the generator's own default of 0.
+                // Both draws happen on every row even when a variance is zero, because
+                // the stream has to advance in step with CS2's or the walk diverges.
+                float na = r.range(-c.recoilAngleVar[mode], c.recoilAngleVar[mode]);
+                float nm = c.recoilMag[mode] + r.range(-c.recoilMagVar[mode], c.recoilMagVar[mode]);
+                if(c.fullAuto && j > 0)
+                {   // Lerp(variance, prev, new): a smoothed walk, not independent kicks
+                    angle += (na - angle)*cs2recoiltablevariance;
+                    magnitude += (nm - magnitude)*cs2recoiltablevariance;
+                }
+                else { angle = na; magnitude = nm; }
+                if(c.fullAuto && j < cs2recoiltablesuppressshots)
+                    magnitude *= cs2recoiltablesuppressfactor
+                               + (1.0f - cs2recoiltablesuppressfactor)*(j/(float)cs2recoiltablesuppressshots);
+                cs2recoiltable[g][mode].off[j].angle = angle;
+                cs2recoiltable[g][mode].off[j].magnitude = magnitude;
+            }
+        }
+    }
+}
+
+// The three constants above are read at generation time, so a pattern outlives a cvar
+// change unless it is rebuilt - cheap enough to just check every shot.
+static const cs2recoilpattern &cs2recoilpatternfor(int gun, int mode)
+{
+    if(!cs2recoiltablebuilt
+       || cs2recoiltablevariance != sv_recoilvariance
+       || cs2recoiltablesuppressshots != sv_recoilsuppressshots
+       || cs2recoiltablesuppressfactor != sv_recoilsuppressfactor) cs2buildrecoiltable();
+    return cs2recoiltable[gun][mode];
+}
+
+// Recoil(): pick this shot's row and add it to the punch velocity.
+static void cs2recoilkick(weapon *w, playerent *p)
+{
+    const cs2guninfo &c = cs2guns[w->type];
+    // Full auto walks the table by shot number, which is what makes the pattern
+    // repeatable. Everything else takes a pseudo-random row, which is what CS2 gets from
+    // GetPredictionRandomSeed(): the rows are already an i.i.d. sample of the same
+    // distribution, so a random index and a random seed come to the same thing.
+    int index = c.fullAuto ? (int)w->cs2recoilindex : (int)rndscale((float)CS2_RECOIL_SHOTS);
+    index %= CS2_RECOIL_SHOTS;
+    if(index < 0) index += CS2_RECOIL_SHOTS;
+    const cs2recoiloffset &o = cs2recoilpatternfor(w->type, w->cs2firemode()).off[index];
+    float rad = o.angle*RAD;
+    // KickBack() sets an angular velocity in degrees per second. Source's pitch grows
+    // upwards as it goes negative; AC's grows upwards as it goes positive, so the pitch
+    // term flips sign. Yaw counts counter-clockwise from above in both.
+    p->punchpitchvel += cosf(rad)*o.magnitude;
+    p->punchyawvel -= sinf(rad)*o.magnitude;
+    w->cs2recoilindex += 1.0f;
+    w->cs2lastshot = lastmillis;
+}
+
+// DecayAimPunchAngle, once per engine tick. The punch sheds an exponential and a linear
+// term, is carried along by the velocity, and the velocity decays in turn. The two
+// half-steps around the velocity update are CS2's (an implicit midpoint step, so the
+// punch and the velocity meet in the middle of the tick), and the linear term is what
+// guarantees the punch actually reaches zero instead of only approaching it.
+static void cs2recuiltick(playerent *p, weapon *w, int dtms)
+{
+    if(dtms <= 0) return;
+    float dt = dtms/1000.0f, decay = expf(-sv_recoildecayexp*dt);
+    float pitch = p->punchpitch*decay, yaw = p->punchyaw*decay;
+    float lin = sv_recoildecaylin*dt, mag = sqrtf(pitch*pitch + yaw*yaw);
+    if(mag > lin) { float k = 1.0f - lin/mag; pitch *= k; yaw *= k; }
+    else pitch = yaw = 0.0f;
+    pitch += p->punchpitchvel*dt*0.5f;
+    yaw += p->punchyawvel*dt*0.5f;
+    float veldecay = expf(-sv_recoilveldecay*dt);
+    p->punchpitchvel *= veldecay;
+    p->punchyawvel *= veldecay;
+    // sv_punchmax is only a backstop now: the decay bounds the punch on its own (the
+    // hardest kick of the nine, the shotgun, peaks near 19 degrees).
+    p->punchpitch = clamp(pitch + p->punchpitchvel*dt*0.5f, -sv_punchmax, sv_punchmax);
+    p->punchyaw = clamp(yaw + p->punchyawvel*dt*0.5f, -sv_punchmax, sv_punchmax);
+    // m_flRecoilIndex walks the pattern, so it has to stop walking when the burst does.
+    // CS2 decays it only once more than a cycle time has passed since the last shot,
+    // which is precisely the "trigger is not down" case here - while a full-auto weapon
+    // is firing, the shot-to-shot gap is the cycle time and the index never decays.
+    if(lastmillis - w->cs2lastshot > (int)(guns[w->type].attackdelay*1.10f))
+        w->cs2recoilindex *= expf(-logf(10.0f)*sv_recoilindexdecay*dt);
+}
+
+static void cs2resetweapon(weapon *w, playerent *p)
+{
+    w->cs2fireinacc = 0.0f;
+    w->cs2lasttick = lastmillis;
+    w->cs2epoch = p ? p->lifesequence : -1;
+    w->cs2recoilindex = 0.0f;
+    w->cs2lastshot = w->cs2recoiltick = lastmillis;
+    // The punch is player state and would decay on its own within a quarter second, but
+    // clearing it here is what keeps a weapon switch or a respawn from carrying a
+    // half-finished spray into the next one.
+    if(p) p->punchpitch = p->punchyaw = p->punchpitchvel = p->punchyawvel = 0.0f;
+}
+
+static void cs2tick(weapon *w, playerent *p, int now)
+{
+    int dtms = now - w->cs2lasttick;
+    if(dtms <= 0) return;
+    w->cs2lasttick = now;
+    w->cs2fireinacc = cs2decaystep(w->cs2fireinacc, cs2guns[w->type], w->cs2firemode(),
+                                   p->onfloor, p->crouching, w->shots, dtms);
+}
+
+// Per-tick upkeep for one player's held weapon: age the accuracy penalty and pick the
+// movement speed. maxspeed is persistent state on the entity rather than something physics
+// recomputes, so writing it every tick is also what restores 16.0 the moment sv_weaponspeed
+// is switched off.
+static void cs2playerupdate(playerent *p)
+{
+    if(!p || !p->weaponsel) return;
+    weapon *w = p->weaponsel;
+    // The engine only resets the weapon actually in hand on death/respawn, so one that was
+    // put away mid-burst would keep a stale accuracy penalty - the life stamp catches that.
+    if(p->state != CS_ALIVE || w->cs2epoch != p->lifesequence) cs2resetweapon(w, p);
+    else if(sv_cs2weapons)
+    {
+        if(sv_weaponaccuracy) cs2tick(w, p, lastmillis);
+        // The punch runs on its own clock rather than sharing cs2tick's, so either half of
+        // the model can be switched off without stalling the other one's dt.
+        if(sv_recoil) cs2recuiltick(p, w, lastmillis - w->cs2recoiltick);
+    }
+    w->cs2recoiltick = lastmillis; // stamped even while the recoil is off, so re-enabling it
+                                   // does not integrate one enormous step
+    p->maxspeed = p->state == CS_ALIVE && sv_cs2weapons && sv_weaponspeed
+                ? w->cs2maxspeed() : ACMAXSPEED;
+}
+
+// Once per tick, from updateworld(). Bots are included or a player slowed down by an AWP
+// would be racing bots that never slow down.
+void cs2weaponupdate()
+{
+    cs2playerupdate(player1);
+    if(m_botmode) loopv(bots) cs2playerupdate(bots[i]);
+}
 
 // Direction vector for a view angle, using the same convention as the projectile code below
 // (weapon.cpp: x = sin(yaw)*cos(pitch), y = -cos(yaw)*cos(pitch), z = sin(pitch)).
@@ -1039,15 +1427,47 @@ void weapon::attackphysics(vec &from, vec &to) // physical fx to the owner
     vec aimdir(unitv);
     if(dist > 0.0001f) aimdir.div(dist); // proper unit vector along the shot
     float f = dist/1000;
-    // base (burst / standing) spread, plus movement, airborne and crouch terms. pl->vel is
-    // normalised (1.0 == full run speed). The magnitudes are placeholders pending CS2 data, but
-    // the structure matches CS2: the first shot of a burst carries no burst spread, while the
-    // movement and airborne penalties always apply.
-    float basespread = dynspread();
-    if(shots <= 1) basespread *= sv_firstshotfrac;
-    int spread = (int)(basespread + sv_moveinacc*owner->vel.magnitudexy()
-                       + (owner->onfloor ? 0.0f : sv_airinacc));
-    if(owner->crouching) spread = (int)(spread*sv_crouchacc);
+    // Two spread models behind one switch: CS2's per-weapon one, or AC's global
+    // burst/movement/crouch constants exactly as they were.
+    float spread;
+    if(sv_cs2weapons && sv_weaponaccuracy)
+    {
+        const cs2guninfo &c = cs2guns[type];
+        int mode = cs2firemode();
+        cs2tick(this, owner, lastmillis); // lazy: stays correct even if the tick hook hasn't run
+        // The stance's base is a floor, so the very first shot after a switch or a respawn is
+        // still only as accurate as CS2's standing value rather than being free.
+        float inacc = max(cs2fireinacc, cs2basepenalty(c, mode, owner->onfloor, owner->crouching));
+        // Movement is instantaneous and costs nothing below the crouch speed. owner->vel is
+        // normalised, so its xy magnitude is already the fraction of this weapon's top speed -
+        // the very quantity CS2 remaps, and equal to it because m_flMaxSpeed is what drives
+        // pl->maxspeed in cs2playerspeed().
+        float move = cs2remap(owner->vel.magnitudexy(), CS2_SPEED_DUCK_MODIFIER, 0.95f, 0.0f, 1.0f);
+        if(move > 0.0f) inacc += powf(move, CS2_MOVEMENT_CURVE_EXPONENT)*c.inaccMove[mode];
+        // Airborne: the flat part of the penalty is already in cs2fireinacc (see
+        // cs2basepenalty); this adds the velocity curve, full strength just after takeoff and
+        // falling away towards the apex. AC has no falling term - its vel.z is a damped
+        // impulse that never goes negative - so the descent is an approximation.
+        if(!owner->onfloor)
+        {
+            float peak = c.inaccJumpInitial*sv_airspreadscale;
+            float sqmax = sqrtf(sv_jumpimpulse);
+            float vspeed = acunits(fabsf(owner->vel.z)*owner->maxspeed); // Source units/second
+            inacc += clamp(cs2remap(sqrtf(vspeed), sqmax*0.25f, sqmax, 0.0f, peak), 0.0f, 2.0f*peak);
+        }
+        inacc = min(inacc, 1.0f);                     // CS2 clamps the total at 1.0
+        spread = (inacc + c.spread[mode])*sv_accuracyfactor;
+        cs2fireinacc += c.inaccFire[mode];            // this shot's penalty lands on the next one
+    }
+    else
+    {
+        float basespread = dynspread();
+        if(shots <= 1) basespread *= sv_firstshotfrac;
+        int classic = (int)(basespread + sv_moveinacc*owner->vel.magnitudexy()
+                            + (owner->onfloor ? 0.0f : sv_airinacc));
+        if(owner->crouching) classic = (int)(classic*sv_crouchacc);
+        spread = classic;
+    }
     float recoil = dynrecoil()*-0.01f;
 
     // spread: a random point in a disc perpendicular to the shot, uniform by area. (The old code
@@ -1073,10 +1493,32 @@ void weapon::attackphysics(vec &from, vec &to) // physical fx to the owner
     if(sv_recoilkick)
         owner->vel.add(vec(unitv).mul(recoil/dist).mul(owner->crouching ? 0.75 : 1.0f));
 
-    if(sv_recoilaim)
+    if(sv_cs2weapons && sv_recoil)
+    { // CS2: the recoil climbs through the bullet pattern while the crosshair stays where
+      // you aim. The bullet is fired before the kick is applied (Recoil() runs after
+      // FireBullets), so this shot is bent by what the earlier shots built up and never by
+      // its own kick - which is what makes the first shot of a burst land on the aim.
+        cs2recuiltick(owner, this, lastmillis - cs2recoiltick); // lazy, exactly like cs2tick above
+        cs2recoiltick = lastmillis;
+        float bpitch = owner->punchpitch*sv_recoilscale, byaw = owner->punchyaw*sv_recoilscale;
+        if(bpitch != 0.0f || byaw != 0.0f)
+        {
+            vec bend = viewdir(owner->yaw + byaw, owner->pitch + bpitch);
+            bend.sub(viewdir(owner->yaw, owner->pitch));   // small-angle offset from the aim direction
+            vec dir = aimdir;
+            dir.add(bend);
+            dir.normalize();
+            // add only the bend: assigning "to = from + dir*dist" would wipe the spread offset
+            // that was applied to "to" just above.
+            to.add(vec(dir).sub(aimdir).mul(dist));
+        }
+        cs2recoilkick(this, owner);
+    }
+    else if(sv_recoilaim)
         owner->pitchvel = kick;                 // classic AC: the recoil displaces the aim
     else
-    { // CS2: the recoil climbs through the bullet pattern while the crosshair stays where you aim.
+    { // The interim CS2-ish model from before the data arrived: a kick of the shot count
+      // accumulated straight into the punch. Kept as the behaviour of sv_cs2weapons 0.
       // shots resets when the trigger is released, so shots<=1 marks the start of a new burst.
         if(shots <= 1) owner->punchpitch = owner->punchyaw = 0.0f;
         // Bend this bullet by the recoil accumulated from the PREVIOUS shots, then add this shot's
@@ -1121,6 +1563,7 @@ void weapon::updatetimers(int millis)
 void weapon::onselecting(bool sound)
 {
     updatelastaction(owner);
+    cs2resetweapon(this, owner); // drawing a weapon clears any penalty it kept from last time
     bool local = (owner == player1);
     if(sound) audiomgr.playsound(S_GUNCHANGE, owner, local ? SP_HIGH : SP_NORMAL);
 }
@@ -1498,7 +1941,7 @@ void gun::attackfx(const vec &from, const vec &to, int millis)
 
 int gun::modelanim() { return modelattacking() ? ANIM_GUN_SHOOT|ANIM_LOOP : ANIM_GUN_IDLE; }
 void gun::checkautoreload() { if(autoreload && owner==player1 && !mag) reload(true); }
-void gun::onownerdies() { shots = 0; }
+void gun::onownerdies() { shots = 0; cs2resetweapon(this, owner); }
 
 
 // shotgun
@@ -1574,10 +2017,11 @@ int sniperrifle::dynspread()
     return info.spread;
 }
 float sniperrifle::dynrecoil() { return scoped && lastmillis - scoped_since > SCOPESETTLETIME ? info.recoil / 3 : info.recoil; }
+int sniperrifle::cs2firemode() const { return scoped ? 1 : 0; }  // CS2's AWP: mode 1 is the scoped one
 bool sniperrifle::selectable() { return weapon::selectable() && !m_noprimary && this == owner->primweap; }
 void sniperrifle::onselecting(bool sound) { weapon::onselecting(sound); scoped = false; player1->scoping = false; }
 void sniperrifle::ondeselecting() { scoped = false; owner->scoping = false; }
-void sniperrifle::onownerdies() { shots = 0; scoped = false; owner->scoping = false; }
+void sniperrifle::onownerdies() { shots = 0; scoped = false; owner->scoping = false; cs2resetweapon(this, owner); }
 void sniperrifle::renderhudmodel() { if(!scoped) weapon::renderhudmodel(); }
 
 void sniperrifle::renderaimhelp(bool teamwarning)

@@ -707,6 +707,8 @@ void updateworld(int curtime, int lastmillis)        // main game update loop
     sleepssemaphore->post();
 
     syncentchanges();
+    cs2weaponupdate();                                  // hold weapon: age the accuracy penalty, integrate
+                                                        // the recoil punch, pick the per-weapon speed
     physicsframe();
     checkweaponstate();
     if(getclientnum()>=0) shoot(player1, worldpos);     // only shoot when connected to server
