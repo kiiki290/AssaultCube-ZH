@@ -38,7 +38,12 @@ ifneq (,$(findstring clang,$(CXX)))
 	override CXXFLAGS+= -Wall -fsigned-char
 else
 	CXXFLAGS= -O3 -fomit-frame-pointer
-	override CXXFLAGS+= -Wall -fsigned-char -ffast-math -rdynamic -Wno-format-zero-length
+	override CXXFLAGS+= -Wall -fsigned-char -ffast-math -Wno-format-zero-length
+	# -rdynamic is ELF-only; the MinGW target's GCC rejects it outright.
+ifneq (,$(findstring MINGW,$(PLATFORM)))
+else
+	override CXXFLAGS+= -rdynamic
+endif
 	ifeq "$(shell expr 'gcc -dumpversion' \>= 8)" "1"
 		override CXXFLAGS+= -Wno-stringop-truncation
 	endif
@@ -55,9 +60,9 @@ endif
 
 MV=mv
 ifneq (,$(findstring MINGW,$(PLATFORM)))
-WINDRES= windres
+WINDRES?= windres
 CLIENT_INCLUDES= $(INCLUDES) -I../include
-CLIENT_LIBS= -mwindows -L../lib -lSDL2 -lSDL2_image -lzdll -lopengl32 -lenet -lOpenAL32 -llibvorbisfile -lws2_32 -lwinmm
+CLIENT_LIBS= -mwindows -static-libgcc -static-libstdc++ -L../lib -lSDL2main -lSDL2 -lSDL2_image -lzdll -lopengl32 -lenet -lOpenAL32 -lvorbisfile -lws2_32 -lwinmm
 else
 USRLIB=$(shell if [ -e /usr/lib64 ]; then echo "/usr/lib64"; else echo "/usr/lib"; fi)
 CLIENT_INCLUDES= $(INCLUDES) -I/usr/include `sdl2-config --cflags` -idirafter ../include
@@ -125,7 +130,7 @@ CLIENT_PCH= cube.h.gch
 
 ifneq (,$(findstring MINGW,$(PLATFORM)))
 SERVER_INCLUDES= -DSTANDALONE $(INCLUDES) -I../include
-SERVER_LIBS= -L../lib -lzdll -lenet -lws2_32 -lwinmm
+SERVER_LIBS= -static-libgcc -static-libstdc++ -L../lib -lzdll -lenet -lSDL2 -lws2_32 -lwinmm
 else
 SERVER_INCLUDES= -DSTANDALONE $(INCLUDES)
 # use with clang:v10.x
