@@ -977,7 +977,7 @@ void fixcamerarange(physent *cam)
     while(cam->yaw>=360.0f) cam->yaw -= 360.0f;
 }
 
-FVARP(sensitivity, 1e-3f, 3.0f, 1000.0f);       // general mouse sensitivity ("unscoped")
+FVARP(sensitivity, 1e-3f, 3.0f, 1000.0f);       // general mouse sensitivity ("unscoped"); with sv_cs2input this is CS2's own value
 FVARP(scopesens, 0, 0, 1000);                   // scoped mouse sensitivity (if zero, autoscopesens determines, how sensitivity is changed during scoping)
 FVARP(sensitivityscale, 1e-3f, 1, 1000);        // scale all sensitivity values (if unsure, keep at default value "1"- this parameter achieves cosmetic value changes only)
 
@@ -989,10 +989,17 @@ VARP(invmouse, 0, 0, 1);                        // invert y-axis movement (if "1
 FVARP(mouseaccel, 0, 0, 1000);                  // make fast movement even faster (zero deactivates the feature)
 FVARP(mfilter, 0.0f, 0.0f, 6.0f);               // simple lowpass filtering (zero deactivates the feature)
 
+VARP(sv_cs2input, 0, 1, 1);                     // CS2/Source mouse model: `sensitivity` is the CS2 value (see mousemove)
+FVARP(m_yaw, 0.0001f, 0.022f, 1000.0f);         // Source's m_yaw: degrees of yaw per count = sensitivity * m_yaw
+FVARP(m_pitch, -1000.0f, 0.022f, 1000.0f);      // Source's m_pitch (negative there is legitimate; "invmouse" is AC's equivalent)
+FVARP(zoom_sensitivity_ratio_mouse, 0.0f, 1.0f, 1000.0f); // Source's zoom_sensitivity_ratio_mouse, 1.0 = scoping changes nothing
+
 void mousemove(int idx, int idy)
 {
     if(intermission || ispaused || (player1->isspectating() && (player1->spectatemode==SM_FOLLOW1ST||player1->spectatemode==SM_OVERVIEW))) return;
     bool zooming = player1->weaponsel->type == GUN_SNIPER && ((sniperrifle *)player1->weaponsel)->scoped;               // check if player uses scope
+    extern float fov;                                                                                                   // rendergl.cpp; the 4:3-normalized values, so the scope ratio below is aspect-independent
+    extern int scopefov;
     float dx = idx, dy = idy;
     if(mfilter > 0.0001f)
     { // simple IIR-like filter (1st order lowpass)
@@ -1006,12 +1013,27 @@ void mousemove(int idx, int idy)
     if(zooming)
     {                                                                                                                   //      when scoped:
         if(scopesens > 0.0001f) cursens = scopesens;                                                                    //          if specified, use dedicated (fixed) scope sensitivity
+        else if(sv_cs2input) cursens *= ((double)scopefov/fov) * zoom_sensitivity_ratio_mouse;                          //          CS2: linear FOV ratio (view.cpp), not the tangent one
         else cursens *= autoscopesens ? autoscopesensscale : scopesensscale;                                            //          or adjust sensitivity by given (fixed) factor or based on scopefov/fov
     }
-    cursens /= 33.0f * sensitivityscale;                                                                                // final scaling
 
-    camera1->yaw += (float) (dx * cursens);
-    camera1->pitch -= (float) (dy * cursens * (invmouse ? -1 : 1));
+    if(sv_cs2input)
+    {
+        // CS2/Source model (game/client/in_mouse.cpp): the mouse delta is scaled by `sensitivity`, then turned into
+        // an angle by m_yaw/m_pitch - so degrees per count is sensitivity*m_yaw, and the same number means the same
+        // thing in both games.
+        cursens /= sensitivityscale;                                                                                    // AC-only knob, keeps its "bigger = slower" meaning
+
+        camera1->yaw += (float) (dx * cursens * m_yaw);
+        camera1->pitch -= (float) (dy * cursens * m_pitch * (invmouse ? -1 : 1));
+    }
+    else
+    {
+        cursens /= 33.0f * sensitivityscale;                                                                            // final scaling
+
+        camera1->yaw += (float) (dx * cursens);
+        camera1->pitch -= (float) (dy * cursens * (invmouse ? -1 : 1));
+    }
 
     fixcamerarange();
     if(camera1!=player1 && player1->spectatemode!=SM_DEATHCAM)

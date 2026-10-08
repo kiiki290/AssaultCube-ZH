@@ -470,7 +470,8 @@ FVARFP(fov, 75, 90, 120, fovchanged());
 VARFP(scopefov, 5, 50, 60, fovchanged());
 VARP(spectfov, 5, 110, 120);
 VARP(spectfovremote, 0, 0, 1); // use spectfov or remote player's fov when spectating
-FVARP(viewmodelfov, 30, 60, 120); // vertical FOV of the first-person weapon model (CS2 viewmodel_fov default is 60)
+VARP(sv_cs2fov, 0, 1, 1);      // CS2 aspect-ratio FOV model: fov/scopefov/viewmodelfov become 4:3-normalized (see cs2fovscale)
+FVARP(viewmodelfov, 30, 60, 120); // first-person weapon model FOV: vertical as AC always had it, or CS2's viewmodel_fov (horizontal, 4:3) when sv_cs2fov
 void fovchanged()
 {
     extern float autoscopesensscale;
@@ -479,14 +480,23 @@ void fovchanged()
     player1->scopefov = scopefov;
 }
 
+// CS2/Source: `fov` (and scopefov, viewmodel_fov) are values at a 4:3 aspect; the engine widens them with the
+// screen. Source's ScaleFOVByWidthRatio (game/client/view.cpp) is exactly this, with ratio = aspect * 3/4.
+// So fov 90 renders as 106.26 degrees on 16:9 while the vertical FOV stays at 73.74 - Hor+ scaling.
+static float cs2fovscale(float f)
+{
+    if(!sv_cs2fov || aspect <= 0.0f) return f; // aspect is 0 until the first frame sizes the window
+    return 2.0f*atanf(tanf(f*0.5f*RAD)*aspect*0.75f)/RAD;
+}
+
 float dynfov()
 {
     bool isscoped = player1->weaponsel->type == GUN_SNIPER && ((sniperrifle *)player1->weaponsel)->scoped;
     bool useremote = spectfovremote && camera1 != player1 && camera1->type == ENT_PLAYER && ((playerent *)camera1)->ffov && ((playerent *)camera1)->scopefov;
     if(camera1 != player1 && camera1->type < ENT_CAMERA) isscoped = ((playerent *)camera1)->scoping;
-    if(isscoped) return (float) (useremote ? ((playerent *)camera1)->scopefov : scopefov);
-    else if(player1->isspectating()) return (float)(useremote ? ((playerent *)camera1)->ffov : spectfov);
-    else return (float)fov;
+    if(isscoped) return cs2fovscale((float) (useremote ? ((playerent *)camera1)->scopefov : scopefov));
+    else if(player1->isspectating()) return cs2fovscale((float)(useremote ? ((playerent *)camera1)->ffov : spectfov));
+    else return cs2fovscale((float)fov);
 }
 
 VARF(fog, 64, DEFAULT_FOG, 1024, flagmapconfigchange());
@@ -943,6 +953,15 @@ void setperspective(float fovy, float aspect, float nearplane, float farplane)
     }
 }
 
+// The viewmodel FOV is independent of the world `fov` and `setperspective` wants a vertical angle, but CS2's
+// viewmodel_fov (game/client/viewrender.cpp: viewModelSetup.fov = view.fovViewmodel) is a horizontal one that
+// goes through the same ScaleFOVByWidthRatio. Convert; without sv_cs2fov, viewmodelfov stays a vertical angle.
+static float cs2viewmodelfovy()
+{
+    if(!sv_cs2fov || aspect <= 0.0f) return viewmodelfov;
+    return 2.0f*atanf(tanf(cs2fovscale(viewmodelfov)*0.5f*RAD)/aspect)/RAD;
+}
+
 void sethudgunperspective(bool on)
 {
     glMatrixMode(GL_PROJECTION);
@@ -950,7 +969,7 @@ void sethudgunperspective(bool on)
     if(on)
     {
         glScalef(1, 1, 0.5f); // fix hudugns colliding with map geometry
-        setperspective(viewmodelfov, aspect, 0.3f, farplane); // vertical FOV of the viewmodel, independent of world `fov`
+        setperspective(cs2viewmodelfovy(), aspect, 0.3f, farplane); // FOV of the viewmodel, independent of world `fov`
     }
     else setperspective(fovy, aspect, 0.15f, farplane);
     glMatrixMode(GL_MODELVIEW);
