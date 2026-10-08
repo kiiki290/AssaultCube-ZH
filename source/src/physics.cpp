@@ -411,7 +411,7 @@ static const float SVSCALE = 15.625f;                              // 250/16, So
 static inline float svunits(float u) { return u / SVSCALE; }       // Source speed/accel -> cubes
 
 FVARP(sv_accelerate,    0,    5.5f, 100);   // ground acceleration (CS:GO/CS2 default)
-FVARP(sv_friction,      0,    4.8f, 100);   // ground friction (CS:GO/CS2 default)
+FVARP(sv_friction,      0,    5.2f, 100);   // ground friction (CS2 default, from a cvarlist dump)
 FVARP(sv_stopspeed,     0,    80,   1000);  // min ground speed friction fights, Source u/s
 FVARP(sv_airaccelerate, 0,    12,   100);   // air acceleration (CS:GO/CS2 default)
 FVARP(sv_airmaxspeed,   0,    30,   1000);  // air wishspeed cap (Source GetAirSpeedCap), u/s
