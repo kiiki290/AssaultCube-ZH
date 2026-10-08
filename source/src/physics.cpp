@@ -416,6 +416,21 @@ FVARP(sv_friction,      0,    5.2f, 100);   // ground friction (CS2 default, fro
 FVARP(sv_stopspeed,     0,    80,   1000);  // min ground speed friction fights, Source u/s
 FVARP(sv_airaccelerate, 0,    12,   100);   // air acceleration (CS:GO/CS2 default)
 FVARP(sv_airmaxspeed,   0,    30,   1000);  // air wishspeed cap (Source GetAirSpeedCap), u/s
+// Take-off speed for a jump, in cubes per second, and deliberately not a velocity: AC carries its
+// whole vertical motion as vel.z * maxspeed, so a jump written as a bare impulse is really "a
+// fraction of your top speed". With the per-weapon speeds above that is not a detail - the same
+// jump came out 32% lower holding a rifle than the knife and nearly flat with the AWP scoped,
+// which is not a thing a jump should depend on. CS2's jump is an absolute velocity
+// (sv_jump_impulse 301.993377 u/s against sv_gravity 800, giving a 57 unit apex) taken
+// independently of the weapon in hand, so the impulse is divided by maxspeed at the moment of
+// take-off to get the same behaviour here.
+//
+// The number is not CS2's 302. AC's gravity is much weaker than Source's - it displaces the
+// entity by a fixed amount per frame instead of integrating a velocity - so landing on CS2's apex
+// of 57 units (3.648 cubes at SVSCALE 15.625) takes 34.7726 cubes/s in this model. For scale:
+//     34.7726 = CS2's jump height, 3.648 cubes   <- default
+//     32      = classic AC's jump height, 3.004 cubes, exactly
+FVARP(sv_jumpvel,       0,    34.7726f, 200);
 VARP(sv_bhopboost,      0,    0,    1);     // AC's double-jump 1.25x speed boost (0 = off)
 VARP(sv_crouchjump,     0,    0,    1);     // AC's crouch-in-air height bump (0 = off)
 
@@ -594,7 +609,9 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
                             pl->jumpnext = false;
                             bool doublejump = sv_bhopboost && pl->lastjump && lastmillis - pl->lastjump < 250 && pl->strafe != 0 && pl->o.z - pl->eyeheight - pl->lastjumpheight > 0.2f;
                             pl->lastjumpheight = pl->o.z - pl->eyeheight;
-                            pl->vel.z = 2.0f; // physics impulse upwards
+                            // physics impulse upwards, made absolute by dividing out the top speed
+                            // (see sv_jumpvel); maxspeed is only ever 0 if sv_speedscale is 0
+                            pl->vel.z = sv_jumpvel/max(pl->maxspeed, 0.001f);
                             if(doublejump && wishfullspeed > 0.1f) // more velocity on double jump
                             {
                                 pl->vel.mul(1.25f / max(pl->vel.magnitudexy() / wishfullspeed, 1.0f));
@@ -614,7 +631,7 @@ void moveplayer(physent *pl, int moveres, bool local, int curtime)
                     {
                         pl->timeinair += curtime;
                         if (pl->trycrouch && !pl->crouching && !pl->crouchedinair && pl->state!=CS_EDITING) {
-                            if(sv_crouchjump) pl->vel.z += 0.3f; // AC's crouch-in-air height bump (off by default)
+                            if(sv_crouchjump) pl->vel.z += 0.3f*16.0f/max(pl->maxspeed, 0.001f); // AC's crouch-in-air bump, held at its original absolute size (off by default)
                             pl->crouchedinair = true;
                         }
                     }

@@ -936,7 +936,8 @@ COMMAND(accuracyreset, "");
 
 weapon::weapon(class playerent *owner, int type) : type(type), owner(owner), info(guns[type]),
     ammo(owner->ammo[type]), mag(owner->mag[type]), gunwait(owner->gunwait[type]), shots(0),
-    reloading(0), cs2fireinacc(0.0f), cs2lasttick(0), cs2epoch(-1)
+    reloading(0), cs2fireinacc(0.0f), cs2lasttick(0), cs2epoch(-1),
+    cs2recoilindex(0.0f), cs2lastshot(0), cs2recoiltick(0)
 {
 }
 
@@ -1200,6 +1201,44 @@ FVARP(sv_recoildecayexp, 0.0f, 8.0f, 40.0f); // weapon_recoil_decay2_exp  (punch
 FVARP(sv_recoildecaylin, 0.0f, 18.0f, 60.0f);// weapon_recoil_decay2_lin  (punch)
 FVARP(sv_recoilindexdecay, 0.0f, 2.0f, 20.0f); // weapon_recoil_decay_coefficient
 
+// The bullets are only half of what CS2 shows you when you hold the trigger - the camera moves
+// too, and that is most of what makes a spray read as a spray. Two separate terms add up to it
+// (CBasePlayer::CalcPlayerView, baseplayer_shared.cpp:2076-2079, and the tail of
+// CCSPlayer::KickBack):
+//   - the view tracks the aim punch by `view_recoil_tracking`, so the whole screen walks upwards
+//     while the crosshair stays nailed to the middle of it;
+//   - every shot also adds a short punch of its own (m_viewPunchAngle) of
+//     magnitude * weapon_recoil_view_punch_extra. CS2's own comment calls it "additional punch to
+//     the view (screen shake) to make the kick back a bit more visceral". It decays on its own
+//     clock and never touches where the bullet goes.
+// Both are camera-only. The bullet direction keeps using the aim punch alone - if the shake bent
+// the bullets too, the pattern would stop being reproducible and stop being learnable.
+FVARP(sv_viewrecoiltracking, 0.0f, 0.45f, 4.0f); // view_recoil_tracking
+FVARP(sv_viewpunchextra, 0.0f, 0.055f, 1.0f);    // weapon_recoil_view_punch_extra
+FVARP(sv_viewpunchdecay, 0.0f, 18.0f, 60.0f);    // view_punch_decay (CS2 passes 0 as the linear term)
+
+// m_viewPunchAngle. Only ever the local player's: nothing else renders it, and keeping it out of
+// physent avoids a PCH change for a purely visual value. Degrees, AC's convention, same axes as
+// punchpitch/punchyaw.
+static float cs2viewpunchpitch = 0.0f, cs2viewpunchyaw = 0.0f;
+
+// The extra rotation the camera should be rendered at this frame, in degrees. rendergl.cpp calls
+// this once per frame and adds both to camera1's angles.
+void cs2viewpunch(float &yawoffset, float &pitchoffset)
+{
+    if(!sv_cs2weapons || !sv_recoil || !player1)
+    {
+        // Clear the state rather than only masking it. cs2recuiltick is what ages the shake and it
+        // only runs while sv_recoil is on, so a value left over from just before the switch would
+        // otherwise reappear intact the moment the switch went back on, mid-spray.
+        cs2viewpunchpitch = cs2viewpunchyaw = 0.0f;
+        yawoffset = pitchoffset = 0.0f;
+        return;
+    }
+    yawoffset = cs2viewpunchyaw + player1->punchyaw*sv_viewrecoiltracking;
+    pitchoffset = cs2viewpunchpitch + player1->punchpitch*sv_viewrecoiltracking;
+}
+
 // CS2's RNG, and it has to be CS2's exactly: the pattern is nothing but the sequence
 // this produces. It is Numerical Recipes' ran1 - a Park-Miller generator with the
 // Bays-Durham shuffle on top, which is why the values are not merely "some random
@@ -1318,11 +1357,23 @@ static void cs2recoilkick(weapon *w, playerent *p)
     if(index < 0) index += CS2_RECOIL_SHOTS;
     const cs2recoiloffset &o = cs2recoilpatternfor(w->type, w->cs2firemode()).off[index];
     float rad = o.angle*RAD;
-    // KickBack() sets an angular velocity in degrees per second. Source's pitch grows
-    // upwards as it goes negative; AC's grows upwards as it goes positive, so the pitch
-    // term flips sign. Yaw counts counter-clockwise from above in both.
+    // KickBack() sets an angular velocity in degrees per second. Both engines count yaw
+    // counter-clockwise seen from above, but they do not share a world: Source's is right-handed,
+    // AC's is its mirror image (transplayer: "move from RH to Z-up LH quake style worldspace",
+    // glScalef(1, -1, 1)). The same positive yaw offset therefore turns the shot to opposite sides
+    // of the crosshair, so the horizontal term is negated here - drop that sign and the whole
+    // pattern comes out flipped left-for-right. Pitch needs no handedness correction; its sign
+    // difference is the stored-angle convention (Source's pitch grows downwards, AC's upwards),
+    // which is the flip the cos term carries.
     p->punchpitchvel += cosf(rad)*o.magnitude;
-    p->punchyawvel -= sinf(rad)*o.magnitude;
+    p->punchyawvel += sinf(rad)*o.magnitude;
+    // ...and the same kick, scaled down, straight onto the camera. Bots share this code, so the
+    // screen shake is the local player's only.
+    if(p == player1)
+    {
+        cs2viewpunchpitch += cosf(rad)*o.magnitude*sv_viewpunchextra;
+        cs2viewpunchyaw += sinf(rad)*o.magnitude*sv_viewpunchextra;
+    }
     w->cs2recoilindex += 1.0f;
     w->cs2lastshot = lastmillis;
 }
@@ -1336,6 +1387,14 @@ static void cs2recuiltick(playerent *p, weapon *w, int dtms)
 {
     if(dtms <= 0) return;
     float dt = dtms/1000.0f, decay = expf(-sv_recoildecayexp*dt);
+    // m_viewPunchAngle is a plain decaying offset rather than a velocity (DecayAngles with a zero
+    // linear term), and it belongs to the local player alone, so it ages exactly once per frame.
+    if(p == player1)
+    {
+        float vpdecay = expf(-sv_viewpunchdecay*dt);
+        cs2viewpunchpitch *= vpdecay;
+        cs2viewpunchyaw *= vpdecay;
+    }
     float pitch = p->punchpitch*decay, yaw = p->punchyaw*decay;
     float lin = sv_recoildecaylin*dt, mag = sqrtf(pitch*pitch + yaw*yaw);
     if(mag > lin) { float k = 1.0f - lin/mag; pitch *= k; yaw *= k; }
@@ -1353,7 +1412,13 @@ static void cs2recuiltick(playerent *p, weapon *w, int dtms)
     // CS2 decays it only once more than a cycle time has passed since the last shot,
     // which is precisely the "trigger is not down" case here - while a full-auto weapon
     // is firing, the shot-to-shot gap is the cycle time and the index never decays.
-    if(lastmillis - w->cs2lastshot > (int)(guns[w->type].attackdelay*1.10f))
+    // CS2's slack over the cycle time is 10%, which is exactly one 64 Hz tick. AC counts gunwait
+    // down in frame milliseconds, so the interval a full-auto weapon actually manages is the cycle
+    // time rounded *up* to a frame boundary - up to one whole frame longer than the cycle itself.
+    // Without that frame in the slack, unlucky frame rates would fail the test on every shot (a
+    // 16 ms frame gives the 100 ms assault rifle 112 ms between shots) and the index would decay
+    // as fast as it walked, stalling the pattern after a dozen rounds instead of walking it out.
+    if(lastmillis - w->cs2lastshot > (int)(guns[w->type].attackdelay*1.10f) + dtms)
         w->cs2recoilindex *= expf(-logf(10.0f)*sv_recoilindexdecay*dt);
 }
 
@@ -1368,6 +1433,7 @@ static void cs2resetweapon(weapon *w, playerent *p)
     // clearing it here is what keeps a weapon switch or a respawn from carrying a
     // half-finished spray into the next one.
     if(p) p->punchpitch = p->punchyaw = p->punchpitchvel = p->punchyawvel = 0.0f;
+    if(p == player1) cs2viewpunchpitch = cs2viewpunchyaw = 0.0f;
 }
 
 static void cs2tick(weapon *w, playerent *p, int now)
@@ -1552,7 +1618,14 @@ void weapon::renderhudmodel(int lastaction, int index)
     if(!intermission || !ispaused) wm.calcmove(unitv, lastaction, p);
     defformatstring(path)("weapons/%s", info.modelname);
     bool emit = (wm.anim&ANIM_INDEX)==ANIM_GUN_SHOOT && (lastmillis - lastaction) < flashtime();
-    rendermodel(path, wm.anim|ANIM_DYNALLOC|(righthanded==index ? ANIM_MIRROR : 0)|(emit ? ANIM_PARTICLE : 0), 0, -1, wm.pos, 0, p->yaw+90, p->pitch+wm.k_rot, 40.0f, wm.basetime, NULL, NULL, 1.28f);
+    // The viewmodel is oriented from the aim, but it is drawn inside the world and therefore under
+    // the shaken camera matrix - so it has to carry the same recoil offset the view does, or the
+    // screen would rotate around a gun that stayed where it was and the muzzle would visibly sag
+    // as a spray climbs. Only the local player's own weapon: someone else's gun in a follow camera
+    // has no punch applied to the view either.
+    float vy = 0.0f, vp = 0.0f;
+    if(p == player1) cs2viewpunch(vy, vp);
+    rendermodel(path, wm.anim|ANIM_DYNALLOC|(righthanded==index ? ANIM_MIRROR : 0)|(emit ? ANIM_PARTICLE : 0), 0, -1, wm.pos, 0, p->yaw+90+vy, p->pitch+wm.k_rot+vp, 40.0f, wm.basetime, NULL, NULL, 1.28f);
 }
 
 void weapon::updatetimers(int millis)

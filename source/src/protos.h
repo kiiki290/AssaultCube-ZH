@@ -986,6 +986,7 @@ extern void damageeffect(int damage, playerent *d);
 extern void tryreload(playerent *p);
 extern void checkweaponstate();
 extern void cs2weaponupdate();   // per-tick CS2 weapon state: per-weapon speed, accuracy and recoil
+extern void cs2viewpunch(float &yawoffset, float &pitchoffset); // camera-only recoil offset, degrees
 extern int burstshotssettings[NUMGUNS];
 
 // entities:

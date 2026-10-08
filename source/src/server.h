@@ -576,6 +576,21 @@ itemstat powerupstats[I_ARMOUR-I_HEALTH+1] =
     {50, 0, 100, S_ITEMARMOUR}, // 2 armour
 };
 
+// attackdelay doubles as the *server's* rate limit (serverevents.h rejects a shot that arrives
+// sooner than gunwait), so it has to stay one shared number rather than becoming a client-side
+// switch. It is also what sets a full-auto weapon's real cadence, and therefore the size of its
+// recoil pattern: the punch keeps decaying between shots, so firing slower than CS2 shrinks the
+// pattern. CS2's m_flCycleTime for the weapons cs2guns[] maps:
+//     AK-47        100 ms    AC had 120 (500 RPM against CS2's 600) -> adopted, that was the whole
+//                            of the "spray pattern is too small" report: 100 ms gives the CS2
+//                            11.1 deg of climb, 120 ms gave 8.9.
+//     MP9           70 ms    AC had 80 (750 against 857 RPM) -> adopted too, same reasoning: both
+//                            are full-auto with a 1:1 role match, so the cadence should agree.
+//     USP-S        170 ms    AC has 160, close enough either way.
+//     Nova         880 ms    AC has 880, already exact.
+//     AWP         1455 ms    AC has 1500, within 3%.
+//     FAMAS         90 ms    AC's carbine is a slow semi-auto; no equivalent to map.
+//     Dual Elites  120 ms    CS2 puts two bullets in one cycle, AC's akimbo fires one per shot.
 guninfo guns[NUMGUNS] =
 {
     // Please update ./ac_website/htdocs/docs/introduction.html if these figures change.
@@ -588,9 +603,9 @@ guninfo guns[NUMGUNS] =
     { "pistol",  "Pistol",       S_PISTOL,  S_RPISTOL,  1400,   160,    18,   0,     0,   0, 53,   10,   12,   6,  5,   6,  35,   58,   125,  1,   false },
     { "carbine", "TMP-M&A CB",   S_CARBINE, S_RCARBINE, 1800,   720,    60,  40,     0,   0, 10,   60,   25,   4,  4,  10,  60,   60,   150,  1,   false },
     { "shotgun", "V-19 CS",      S_SHOTGUN, S_RSHOTGUN, 2400,   880,    1,    0,     0,   0,  1,   35,    8,   9,  9,  10, 140,  140,   125,  1,   false },   // CAUTION dmg only sane for server!
-    { "subgun",  "A-ARD/10 SMG", S_SUBGUN,  S_RSUBGUN,  1650,   80,     16,   0,     0,   0, 45,   15,   30,   1,  2,   5,  25,   50,   188,  1,   true  },
+    { "subgun",  "A-ARD/10 SMG", S_SUBGUN,  S_RSUBGUN,  1650,   70,     16,   0,     0,   0, 45,   15,   30,   1,  2,   5,  25,   50,   188,  1,   true  },   // 70 = CS2 MP9 m_flCycleTime, see above
     { "sniper",  "AD-81 SR",     S_SNIPER,  S_RSNIPER,  1950,   1500,   82,  25,     0,   0, 50,   50,    5,   4,  4,  10,  85,   85,   100,  1,   false },
-    { "assault", "MTP-57 AR",    S_ASSAULT, S_RASSAULT, 2000,   120,    22,   0,     0,   0, 18,   30,   30,   0,  2,   3,  25,   50,   115,  1,   true  },
+    { "assault", "MTP-57 AR",    S_ASSAULT, S_RASSAULT, 2000,   100,    22,   0,     0,   0, 18,   30,   30,   0,  2,   3,  25,   50,   115,  1,   true  },   // 100 = CS2 AK-47 m_flCycleTime, see above
     { "grenade", "Grenades",     S_NULL,    S_NULL,     1000,   650,    200,  0,    20,   6,  1,    1,   1,    3,  1,   0,   0,    0,    0,   3,   false },
     { "pistol",  "Akimbo",       S_PISTOL,  S_RAKIMBO,  1400,   80,     18,   0,     0,   0, 50,   10,   30,   6,  5,   4,  15,   25,   115,  1,   true  },
 };

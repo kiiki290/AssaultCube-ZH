@@ -512,6 +512,24 @@ void resetcamera()
     camera1 = player1;
 }
 
+// The camera's angles for this frame: camera1's own, plus the recoil offset the weapon model
+// maintains (cs2viewpunch, weapon.cpp - the view tracking the aim punch plus the per-shot screen
+// shake). It has to be applied here rather than written into camera1, because in first person
+// camera1 *is* player1: storing it there would feed the punch back into the aim through mousemove.
+// Any other camera means spectating, where the local player's own recoil is not the subject.
+static void viewangles(float &yaw, float &pitch)
+{
+    yaw = camera1->yaw;
+    pitch = camera1->pitch;
+    if(camera1 == player1)
+    {
+        float y, p;
+        cs2viewpunch(y, p);
+        yaw += y;
+        pitch += p;
+    }
+}
+
 void recomputecamera()
 {
     if((player1->state==CS_SPECTATE || player1->state==CS_DEAD) && !editmode)
@@ -614,9 +632,10 @@ void transplayer()
 {
     glLoadIdentity();
 
+    float vy, vp; viewangles(vy, vp);
     glRotatef(camera1->roll, 0, 0, 1);
-    glRotatef(camera1->pitch, -1, 0, 0);
-    glRotatef(camera1->yaw, 0, 1, 0);
+    glRotatef(vp, -1, 0, 0);
+    glRotatef(vy, 0, 1, 0);
 
     // move from RH to Z-up LH quake style worldspace
     glRotatef(-90, 1, 0, 0);
@@ -700,8 +719,9 @@ void drawreflection(float hf, int w, int h, float changelod, bool refract)
 
     resetcubes();
 
+    float vy, vp; viewangles(vy, vp);   // only the LOD pick below; the drawing reads transplayer()'s matrix
     render_world(camera1->o.x, camera1->o.y, refract ? camera1->o.z : hf, changelod,
-            (int)camera1->yaw, (refract ? 1 : -1)*(int)camera1->pitch, dynfov(), fovy, size, size);
+            (int)vy, (refract ? 1 : -1)*(int)vp, dynfov(), fovy, size, size);
 
     setupstrips();
 
@@ -724,8 +744,8 @@ void drawreflection(float hf, int w, int h, float changelod, bool refract)
 
     glPushMatrix();
     glLoadIdentity();
-    glRotatef(camera1->pitch, -1, 0, 0);
-    glRotatef(camera1->yaw,   0, 1, 0);
+    glRotatef(vp, -1, 0, 0);
+    glRotatef(vy,   0, 1, 0);
     glRotatef(90, 1, 0, 0);
     if(!refract) glScalef(1, 1, -1);
     glColor3f(1, 1, 1);
@@ -1056,6 +1076,9 @@ void gl_drawframe(int w, int h, float changelod, float curfps, int elapsed)
 
     recomputecamera();
 
+    // Resolved once for the whole frame, after recomputecamera() has settled who is looking.
+    float viewyaw, viewpitch; viewangles(viewyaw, viewpitch);
+
     aspect = float(w)/h;
     fovy = 2*atan2(tan(float(dynfov())/2*RAD), aspect)/RAD;
 
@@ -1109,15 +1132,15 @@ void gl_drawframe(int w, int h, float changelod, float curfps, int elapsed)
     resetcubes();
 
     render_world(camera1->o.x, camera1->o.y, camera1->o.z, changelod,
-            (int)camera1->yaw, (int)camera1->pitch, dynfov(), fovy, w, h);
+            (int)viewyaw, (int)viewpitch, dynfov(), fovy, w, h);
 
     setupstrips();
 
     renderstripssky();
 
     glLoadIdentity();
-    glRotatef(camera1->pitch, -1, 0, 0);
-    glRotatef(camera1->yaw,   0, 1, 0);
+    glRotatef(viewpitch, -1, 0, 0);
+    glRotatef(viewyaw,   0, 1, 0);
     glRotatef(90, 1, 0, 0);
     glColor3f(1, 1, 1);
     glDisable(GL_FOG);
